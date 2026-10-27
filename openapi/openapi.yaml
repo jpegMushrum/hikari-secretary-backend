@@ -1,0 +1,45 @@
+openapi: 3.1.0
+info:
+  title: Hikari Secretary Backend API
+  version: 0.1.0-dev
+  description: |
+    Внутренний API платформы Hikari Secretary. Предметные эндпоинты будут
+    добавляться после утверждения модели данных и проверки Telegram initData.
+servers:
+  - url: /
+paths:
+  /healthz:
+    get:
+      summary: Проверка работоспособности процесса
+      responses:
+        '200':
+          description: Процесс запущен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+  /readyz:
+    get:
+      summary: Проверка готовности сервиса и PostgreSQL
+      responses:
+        '200':
+          description: PostgreSQL доступен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+        '503':
+          description: PostgreSQL временно недоступен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          examples: [ok]

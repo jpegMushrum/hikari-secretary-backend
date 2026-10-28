@@ -1,10 +1,10 @@
 openapi: 3.1.0
 info:
   title: Hikari Secretary Backend API
-  version: 0.1.0-dev
+  version: 0.2.0-dev
   description: |
-    Внутренний API платформы Hikari Secretary. Предметные эндпоинты будут
-    добавляться после утверждения модели данных и проверки Telegram initData.
+    Внутренний API платформы Hikari Secretary. Все предметные endpoints будут
+    требовать проверенные Telegram Mini App credentials и роль администратора.
 servers:
   - url: /
 paths:
@@ -34,7 +34,36 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HealthStatus'
+  /api/v1/admin/me:
+    get:
+      summary: Текущий аутентифицированный администратор
+      security:
+        - telegramInitData: []
+      responses:
+        '200':
+          description: Подписанный пользователь Telegram присутствует в списке администраторов
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Administrator'
+        '401':
+          description: Telegram initData отсутствует, изменён или устарел
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Пользователь Telegram не является администратором
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 components:
+  securitySchemes:
+    telegramInitData:
+      type: http
+      scheme: tma
+      description: Исходная строка Telegram.WebApp.initData в заголовке Authorization.
   schemas:
     HealthStatus:
       type: object
@@ -43,3 +72,23 @@ components:
         status:
           type: string
           examples: [ok]
+    Administrator:
+      type: object
+      required: [telegram_id, first_name, last_name, username]
+      properties:
+        telegram_id:
+          type: integer
+          format: int64
+        first_name:
+          type: string
+        last_name:
+          type: string
+        username:
+          type: string
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          examples: [unauthorized]

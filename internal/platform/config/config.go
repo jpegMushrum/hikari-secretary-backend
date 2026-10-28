@@ -4,15 +4,19 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
 
 type Config struct {
-	Environment     string
-	HTTPAddress     string
-	DatabaseURL     string
-	ShutdownTimeout time.Duration
+	Environment            string
+	HTTPAddress            string
+	DatabaseURL            string
+	ShutdownTimeout        time.Duration
+	TelegramBotToken       string
+	TelegramInitDataMaxAge time.Duration
+	AdminTelegramIDs       map[int64]struct{}
 }
 
 func Load() (Config, error) {
@@ -31,12 +35,52 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("SHUTDOWN_TIMEOUT must be a positive duration")
 	}
 
+	telegramBotToken := strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN"))
+	if telegramBotToken == "" {
+		return Config{}, fmt.Errorf("TELEGRAM_BOT_TOKEN is required")
+	}
+
+	initDataMaxAge, err := time.ParseDuration(valueOrDefault("TELEGRAM_INIT_DATA_MAX_AGE", "1h"))
+	if err != nil || initDataMaxAge <= 0 {
+		return Config{}, fmt.Errorf("TELEGRAM_INIT_DATA_MAX_AGE must be a positive duration")
+	}
+
+	adminTelegramIDs, err := parseTelegramIDs(os.Getenv("ADMIN_TELEGRAM_IDS"))
+	if err != nil {
+		return Config{}, err
+	}
+
 	return Config{
-		Environment:     valueOrDefault("APP_ENV", "development"),
-		HTTPAddress:     valueOrDefault("HTTP_ADDRESS", ":8080"),
-		DatabaseURL:     databaseURL,
-		ShutdownTimeout: shutdownTimeout,
+		Environment:            valueOrDefault("APP_ENV", "development"),
+		HTTPAddress:            valueOrDefault("HTTP_ADDRESS", ":8080"),
+		DatabaseURL:            databaseURL,
+		ShutdownTimeout:        shutdownTimeout,
+		TelegramBotToken:       telegramBotToken,
+		TelegramInitDataMaxAge: initDataMaxAge,
+		AdminTelegramIDs:       adminTelegramIDs,
 	}, nil
+}
+
+func parseTelegramIDs(raw string) (map[int64]struct{}, error) {
+	ids := make(map[int64]struct{})
+	for _, value := range strings.Split(raw, ",") {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+
+		id, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || id <= 0 {
+			return nil, fmt.Errorf("ADMIN_TELEGRAM_IDS must contain positive numeric Telegram IDs")
+		}
+		ids[id] = struct{}{}
+	}
+
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("ADMIN_TELEGRAM_IDS must contain at least one Telegram ID")
+	}
+
+	return ids, nil
 }
 
 func valueOrDefault(name, fallback string) string {

@@ -13,6 +13,7 @@ import (
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/config"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/database"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/httpapi"
+	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/telegramauth"
 )
 
 func main() {
@@ -36,9 +37,12 @@ func main() {
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddress,
-		Handler:           httpapi.NewRouter(pool),
+		Handler:           httpapi.NewRouter(pool, telegramauth.NewValidator(cfg.TelegramBotToken, cfg.TelegramInitDataMaxAge), cfg.AdminTelegramIDs),
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	errorsCh := make(chan error, 1)

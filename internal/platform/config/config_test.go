@@ -10,6 +10,7 @@ func TestLoadUsesDefaults(t *testing.T) {
 	t.Setenv("TELEGRAM_BOT_TOKEN", "test-token")
 	t.Setenv("TELEGRAM_INIT_DATA_MAX_AGE", "")
 	t.Setenv("ADMIN_TELEGRAM_IDS", "123, 456")
+	t.Setenv("BOT_SERVICE_TOKEN", "test-service-token")
 
 	cfg, err := Load()
 	if err != nil {
@@ -64,6 +65,14 @@ func TestLoadRejectsInvalidValues(t *testing.T) {
 			t.Fatal("Load() error = nil, want an error")
 		}
 	})
+
+	t.Run("missing bot service token", func(t *testing.T) {
+		setRequiredEnvironment(t)
+		t.Setenv("BOT_SERVICE_TOKEN", "")
+		if _, err := Load(); err == nil {
+			t.Fatal("Load() error = nil, want an error")
+		}
+	})
 }
 
 func setRequiredEnvironment(t *testing.T) {
@@ -71,4 +80,5 @@ func setRequiredEnvironment(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://user:password@localhost:5432/hikari")
 	t.Setenv("TELEGRAM_BOT_TOKEN", "test-token")
 	t.Setenv("ADMIN_TELEGRAM_IDS", "123")
+	t.Setenv("BOT_SERVICE_TOKEN", "test-service-token")
 }

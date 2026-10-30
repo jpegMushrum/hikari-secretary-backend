@@ -16,6 +16,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/people/application"
+	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/people/domain"
+	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/pagination"
+	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/serviceauth"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/telegramauth"
 )
 
@@ -27,11 +31,36 @@ func (p fakePinger) Ping(context.Context) error {
 	return p.err
 }
 
+type fakePeopleService struct {
+	identity domain.TelegramIdentity
+	list     application.ListPeopleResult
+	syncErr  error
+	listErr  error
+	command  domain.SyncIdentityCommand
+	query    application.ListPeopleQuery
+}
+
+func (s *fakePeopleService) SyncTelegramIdentity(_ context.Context, command domain.SyncIdentityCommand) (domain.TelegramIdentity, error) {
+	s.command = command
+	if s.syncErr != nil {
+		return domain.TelegramIdentity{}, s.syncErr
+	}
+	return s.identity, nil
+}
+
+func (s *fakePeopleService) ListPeople(_ context.Context, query application.ListPeopleQuery) (application.ListPeopleResult, error) {
+	s.query = query
+	if s.listErr != nil {
+		return application.ListPeopleResult{}, s.listErr
+	}
+	return s.list, nil
+}
+
 func TestHealthzIsAlwaysAvailable(t *testing.T) {
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 
-	NewRouter(nil, nil, nil).ServeHTTP(response, request)
+	NewRouter(nil, nil, nil, nil, nil).ServeHTTP(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d", response.Code, http.StatusOK)
@@ -53,7 +82,7 @@ func TestReadyzRequiresDatabase(t *testing.T) {
 			response := httptest.NewRecorder()
 			request := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 
-			NewRouter(test.pinger, nil, nil).ServeHTTP(response, request)
+			NewRouter(test.pinger, nil, nil, nil, nil).ServeHTTP(response, request)
 
 			if response.Code != test.wantStatus {
 				t.Errorf("status = %d, want %d", response.Code, test.wantStatus)
@@ -65,7 +94,7 @@ func TestReadyzRequiresDatabase(t *testing.T) {
 func TestAdminEndpointRequiresTelegramAuthorization(t *testing.T) {
 	now := time.Now()
 	validator := telegramauth.NewValidator("test-bot-token", time.Hour)
-	router := NewRouter(nil, validator, map[int64]struct{}{123: {}})
+	router := NewRouter(nil, validator, map[int64]struct{}{123: {}}, nil, nil)
 
 	tests := []struct {
 		name          string
@@ -92,6 +121,117 @@ func TestAdminEndpointRequiresTelegramAuthorization(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestListPeopleRequiresAdministratorAndParsesQuery(t *testing.T) {
+	now := time.Now()
+	validator := telegramauth.NewValidator("test-bot-token", time.Hour)
+	service := &fakePeopleService{list: application.ListPeopleResult{
+		Items:      []application.PersonListItem{{ID: 17, DisplayName: "Hikari", TelegramUserID: 123, Visits: 4}},
+		TotalItems: 1,
+	}}
+	router := NewRouter(nil, validator, map[int64]struct{}{123: {}}, nil, service)
+
+	t.Run("missing authorization", func(t *testing.T) {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "/api/v1/admin/people", nil)
+
+		router.ServeHTTP(response, request)
+		if response.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want %d", response.Code, http.StatusUnauthorized)
+		}
+	})
+
+	t.Run("valid request", func(t *testing.T) {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "/api/v1/admin/people?page=2&page_size=20&search=%20Hikari%20&is_russian_citizen=true&is_itmo_student=false&sort=visits&order=asc", nil)
+		request.Header.Set("Authorization", "tma "+signedInitData(t, "test-bot-token", 123, now))
+
+		router.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d; body = %s", response.Code, http.StatusOK, response.Body.String())
+		}
+		if service.query.Page != (pagination.Page{Number: 2, Size: 20}) {
+			t.Errorf("page = %#v, want {Number: 2, Size: 20}", service.query.Page)
+		}
+		if service.query.Search != "Hikari" || service.query.Sort != application.SortByVisits || service.query.Order != application.SortAscending {
+			t.Errorf("query = %#v", service.query)
+		}
+		if service.query.IsRussianCitizen == nil || !*service.query.IsRussianCitizen || service.query.IsITMOStudent == nil || *service.query.IsITMOStudent {
+			t.Errorf("filters = %#v", service.query)
+		}
+
+		var body struct {
+			Page struct {
+				Number     int   `json:"number"`
+				Size       int   `json:"size"`
+				TotalItems int64 `json:"total_items"`
+				TotalPages int64 `json:"total_pages"`
+			} `json:"page"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body.Page.Number != 2 || body.Page.Size != 20 || body.Page.TotalItems != 1 || body.Page.TotalPages != 1 {
+			t.Errorf("page response = %#v", body.Page)
+		}
+	})
+
+	t.Run("invalid page size", func(t *testing.T) {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "/api/v1/admin/people?page_size=31", nil)
+		request.Header.Set("Authorization", "tma "+signedInitData(t, "test-bot-token", 123, now))
+
+		router.ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d", response.Code, http.StatusBadRequest)
+		}
+	})
+}
+
+func TestSyncTelegramIdentityRequiresBotServiceAuthorization(t *testing.T) {
+	service := &fakePeopleService{identity: domain.TelegramIdentity{
+		PersonID:       42,
+		TelegramUserID: 123,
+		Username:       "hikari",
+		DisplayName:    "Hikari ITMO",
+	}}
+	router := NewRouter(nil, nil, nil, serviceauth.NewValidator("service-secret"), service)
+
+	t.Run("missing authorization", func(t *testing.T) {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/internal/bot/v1/people/identity", strings.NewReader(`{"telegram_user_id":123,"display_name":"Hikari ITMO"}`))
+
+		router.ServeHTTP(response, request)
+		if response.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want %d", response.Code, http.StatusUnauthorized)
+		}
+	})
+
+	t.Run("valid request", func(t *testing.T) {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/internal/bot/v1/people/identity", strings.NewReader(`{"telegram_user_id":123,"username":"@hikari","display_name":"Hikari ITMO"}`))
+		request.Header.Set("Authorization", "Bearer service-secret")
+
+		router.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d; body = %s", response.Code, http.StatusOK, response.Body.String())
+		}
+		if service.command != (domain.SyncIdentityCommand{TelegramUserID: 123, Username: "@hikari", DisplayName: "Hikari ITMO"}) {
+			t.Errorf("command = %#v", service.command)
+		}
+	})
+
+	t.Run("unknown field", func(t *testing.T) {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/internal/bot/v1/people/identity", strings.NewReader(`{"telegram_user_id":123,"display_name":"Hikari ITMO","ignored":true}`))
+		request.Header.Set("Authorization", "Bearer service-secret")
+
+		router.ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d", response.Code, http.StatusBadRequest)
+		}
+	})
 }
 
 func signedInitData(t *testing.T, botToken string, telegramID int64, authDate time.Time) string {

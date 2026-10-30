@@ -10,9 +10,12 @@ import (
 	"syscall"
 	"time"
 
+	peoplepostgres "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/people/adapters/postgres"
+	peopleapp "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/people/application"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/config"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/database"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/httpapi"
+	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/serviceauth"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/telegramauth"
 )
 
@@ -34,10 +37,17 @@ func main() {
 		os.Exit(1)
 	}
 	defer pool.Close()
+	peopleService := peopleapp.NewService(peoplepostgres.NewRepository(pool))
 
 	server := &http.Server{
-		Addr:              cfg.HTTPAddress,
-		Handler:           httpapi.NewRouter(pool, telegramauth.NewValidator(cfg.TelegramBotToken, cfg.TelegramInitDataMaxAge), cfg.AdminTelegramIDs),
+		Addr: cfg.HTTPAddress,
+		Handler: httpapi.NewRouter(
+			pool,
+			telegramauth.NewValidator(cfg.TelegramBotToken, cfg.TelegramInitDataMaxAge),
+			cfg.AdminTelegramIDs,
+			serviceauth.NewValidator(cfg.BotServiceToken),
+			peopleService,
+		),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,

@@ -1,10 +1,11 @@
 openapi: 3.1.0
 info:
   title: Hikari Secretary Backend API
-  version: 0.2.0-dev
+  version: 0.3.0-dev
   description: |
-    Внутренний API платформы Hikari Secretary. Все предметные endpoints будут
-    требовать проверенные Telegram Mini App credentials и роль администратора.
+    Внутренний API платформы Hikari Secretary. Административные предметные
+    endpoints требуют проверенные Telegram Mini App credentials и роль
+    администратора. Внутренние Bot API endpoints требуют отдельный service token.
 servers:
   - url: /
 paths:
@@ -58,12 +59,121 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /api/v1/admin/people:
+    get:
+      summary: Постраничный список людей для администрации
+      security:
+        - telegramInitData: []
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: search
+          in: query
+          description: Поиск по ФИО, Telegram username или отображаемому имени.
+          schema:
+            type: string
+            maxLength: 100
+        - name: is_russian_citizen
+          in: query
+          schema:
+            type: boolean
+        - name: is_itmo_student
+          in: query
+          schema:
+            type: boolean
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [name, visits, last_visit]
+            default: name
+        - name: order
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+      responses:
+        '200':
+          description: Список людей и применённые параметры таблицы
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PeoplePage'
+        '400':
+          description: Один из query-параметров не соответствует контракту
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Telegram initData отсутствует, изменён или устарел
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Пользователь Telegram не является администратором
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /internal/bot/v1/people/identity:
+    post:
+      summary: Синхронизировать Telegram-идентичность человека из бота
+      description: Этот маршрут не публикуется наружу reverse proxy.
+      security:
+        - botServiceToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SyncTelegramIdentityRequest'
+      responses:
+        '200':
+          description: Идентичность создана или обновлена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TelegramIdentity'
+        '400':
+          description: Неподходящее тело запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Неверный service token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 components:
   securitySchemes:
     telegramInitData:
       type: http
       scheme: tma
       description: Исходная строка Telegram.WebApp.initData в заголовке Authorization.
+    botServiceToken:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque service token
+      description: Отдельный BOT_SERVICE_TOKEN для bot-to-backend запросов.
+  parameters:
+    Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PageSize:
+      name: page_size
+      in: query
+      schema:
+        type: integer
+        enum: [10, 20, 30]
+        default: 10
   schemas:
     HealthStatus:
       type: object
@@ -92,3 +202,97 @@ components:
         error:
           type: string
           examples: [unauthorized]
+    PersonListItem:
+      type: object
+      required: [id, telegram_user_id, display_name, visits, feedback_count]
+      properties:
+        id:
+          type: integer
+          format: int64
+        full_name:
+          type: [string, 'null']
+        telegram_user_id:
+          type: integer
+          format: int64
+        username:
+          type: [string, 'null']
+        display_name:
+          type: string
+        is_russian_citizen:
+          type: [boolean, 'null']
+        is_itmo_student:
+          type: [boolean, 'null']
+        visits:
+          type: integer
+          format: int64
+        feedback_count:
+          type: integer
+          format: int64
+        last_visit_at:
+          type: [string, 'null']
+          format: date-time
+    PeoplePage:
+      type: object
+      required: [items, page, sort, filters]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PersonListItem'
+        page:
+          $ref: '#/components/schemas/PageMetadata'
+        sort:
+          type: object
+          required: [field, order]
+          properties:
+            field:
+              type: string
+              enum: [name, visits, last_visit]
+            order:
+              type: string
+              enum: [asc, desc]
+        filters:
+          type: object
+    PageMetadata:
+      type: object
+      required: [number, size, total_items, total_pages]
+      properties:
+        number:
+          type: integer
+        size:
+          type: integer
+        total_items:
+          type: integer
+          format: int64
+        total_pages:
+          type: integer
+          format: int64
+    SyncTelegramIdentityRequest:
+      type: object
+      required: [telegram_user_id, display_name]
+      properties:
+        telegram_user_id:
+          type: integer
+          format: int64
+          minimum: 1
+        username:
+          type: string
+          maxLength: 33
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 256
+    TelegramIdentity:
+      type: object
+      required: [person_id, telegram_user_id, username, display_name]
+      properties:
+        person_id:
+          type: integer
+          format: int64
+        telegram_user_id:
+          type: integer
+          format: int64
+        username:
+          type: string
+        display_name:
+          type: string

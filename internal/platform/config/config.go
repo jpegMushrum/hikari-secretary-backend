@@ -17,6 +17,7 @@ type Config struct {
 	TelegramBotToken       string
 	TelegramInitDataMaxAge time.Duration
 	AdminTelegramIDs       map[int64]struct{}
+	BotServiceToken        string
 }
 
 func Load() (Config, error) {
@@ -50,6 +51,11 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	botServiceToken := strings.TrimSpace(os.Getenv("BOT_SERVICE_TOKEN"))
+	if botServiceToken == "" {
+		return Config{}, fmt.Errorf("BOT_SERVICE_TOKEN is required")
+	}
+
 	return Config{
 		Environment:            valueOrDefault("APP_ENV", "development"),
 		HTTPAddress:            valueOrDefault("HTTP_ADDRESS", ":8080"),
@@ -58,6 +64,7 @@ func Load() (Config, error) {
 		TelegramBotToken:       telegramBotToken,
 		TelegramInitDataMaxAge: initDataMaxAge,
 		AdminTelegramIDs:       adminTelegramIDs,
+		BotServiceToken:        botServiceToken,
 	}, nil
 }
 

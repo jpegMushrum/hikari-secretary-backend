@@ -77,6 +77,8 @@ func createLegacySQLite(t *testing.T, brokenFeedbackReference bool) string {
 
 	for _, statement := range []string{
 		`CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY)`,
+		`CREATE TABLE posts (id INTEGER PRIMARY KEY, text TEXT)`,
+		`CREATE TABLE deliveries (id INTEGER PRIMARY KEY, post_id INTEGER, status TEXT)`,
 		`CREATE TABLE user_profiles (
 			user_id INTEGER PRIMARY KEY, full_name TEXT, telegram_username TEXT,
 			telegram_first_name TEXT, telegram_last_name TEXT,

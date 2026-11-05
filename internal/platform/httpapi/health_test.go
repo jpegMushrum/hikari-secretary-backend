@@ -60,7 +60,7 @@ func TestHealthzIsAlwaysAvailable(t *testing.T) {
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 
-	NewRouter(nil, nil, nil, nil, nil).ServeHTTP(response, request)
+	NewRouter(nil, nil, nil, nil, nil, nil).ServeHTTP(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d", response.Code, http.StatusOK)
@@ -82,7 +82,7 @@ func TestReadyzRequiresDatabase(t *testing.T) {
 			response := httptest.NewRecorder()
 			request := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 
-			NewRouter(test.pinger, nil, nil, nil, nil).ServeHTTP(response, request)
+			NewRouter(test.pinger, nil, nil, nil, nil, nil).ServeHTTP(response, request)
 
 			if response.Code != test.wantStatus {
 				t.Errorf("status = %d, want %d", response.Code, test.wantStatus)
@@ -94,7 +94,7 @@ func TestReadyzRequiresDatabase(t *testing.T) {
 func TestAdminEndpointRequiresTelegramAuthorization(t *testing.T) {
 	now := time.Now()
 	validator := telegramauth.NewValidator("test-bot-token", time.Hour)
-	router := NewRouter(nil, validator, map[int64]struct{}{123: {}}, nil, nil)
+	router := NewRouter(nil, validator, map[int64]struct{}{123: {}}, nil, nil, nil)
 
 	tests := []struct {
 		name          string
@@ -130,7 +130,7 @@ func TestListPeopleRequiresAdministratorAndParsesQuery(t *testing.T) {
 		Items:      []application.PersonListItem{{ID: 17, DisplayName: "Hikari", TelegramUserID: 123, Visits: 4}},
 		TotalItems: 1,
 	}}
-	router := NewRouter(nil, validator, map[int64]struct{}{123: {}}, nil, service)
+	router := NewRouter(nil, validator, map[int64]struct{}{123: {}}, nil, service, nil)
 
 	t.Run("missing authorization", func(t *testing.T) {
 		response := httptest.NewRecorder()
@@ -196,7 +196,7 @@ func TestSyncTelegramIdentityRequiresBotServiceAuthorization(t *testing.T) {
 		Username:       "hikari",
 		DisplayName:    "Hikari ITMO",
 	}}
-	router := NewRouter(nil, nil, nil, serviceauth.NewValidator("service-secret"), service)
+	router := NewRouter(nil, nil, nil, serviceauth.NewValidator("service-secret"), service, nil)
 
 	t.Run("missing authorization", func(t *testing.T) {
 		response := httptest.NewRecorder()

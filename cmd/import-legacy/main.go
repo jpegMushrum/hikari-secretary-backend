@@ -13,8 +13,12 @@ import (
 func main() {
 	var sqlitePath string
 	var jsonOutput bool
+	var apply bool
+	var databaseURL string
 	flag.StringVar(&sqlitePath, "sqlite", "", "path to the legacy SQLite database")
 	flag.BoolVar(&jsonOutput, "json", false, "write the report as JSON")
+	flag.BoolVar(&apply, "apply", false, "apply the validated import to PostgreSQL")
+	flag.StringVar(&databaseURL, "database-url", os.Getenv("DATABASE_URL"), "target PostgreSQL connection URL (required with --apply)")
 	flag.Parse()
 
 	if sqlitePath == "" {
@@ -22,9 +26,15 @@ func main() {
 		os.Exit(2)
 	}
 
-	report, err := legacyimport.DryRun(context.Background(), sqlitePath)
+	var report legacyimport.Report
+	var err error
+	if apply {
+		report, err = legacyimport.Apply(context.Background(), sqlitePath, databaseURL)
+	} else {
+		report, err = legacyimport.DryRun(context.Background(), sqlitePath)
+	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "dry-run import failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "legacy import failed: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -49,7 +59,11 @@ func printReport(report legacyimport.Report) {
 	if !report.Valid {
 		status = "INVALID"
 	}
-	fmt.Printf("Dry-run import: %s\n", status)
+	label := "Dry-run import"
+	if report.Applied {
+		label = "Applied import"
+	}
+	fmt.Printf("%s: %s\n", label, status)
 	fmt.Printf("Source: %s (schema version %d)\n", report.SourceSQLitePath, report.SourceVersion)
 	fmt.Printf("Source counts: profiles=%d events=%d registrations=%d feedback=%d\n", report.Counts.Profiles, report.Counts.Events, report.Counts.Registrations, report.Counts.Feedback)
 	fmt.Printf("Projected PostgreSQL counts: people=%d identities=%d events=%d registrations=%d attendance=%d feedback=%d\n", report.Counts.ProjectedPeople, report.Counts.ProjectedTelegramIdentities, report.Counts.Events, report.Counts.Registrations, report.Counts.ProjectedAttendances, report.Counts.Feedback)

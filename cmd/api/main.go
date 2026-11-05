@@ -10,6 +10,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jpegMushrum/hikari-secretary-backend/internal/adapters/botapi"
+	interactionspostgres "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/interactions/adapters/postgres"
+	interactionsapp "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/interactions/application"
 	peoplepostgres "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/people/adapters/postgres"
 	peopleapp "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/people/application"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/config"
@@ -38,6 +41,7 @@ func main() {
 	}
 	defer pool.Close()
 	peopleService := peopleapp.NewService(peoplepostgres.NewRepository(pool))
+	interactionService := interactionsapp.NewService(interactionspostgres.NewRepository(pool))
 
 	server := &http.Server{
 		Addr: cfg.HTTPAddress,
@@ -47,6 +51,7 @@ func main() {
 			cfg.AdminTelegramIDs,
 			serviceauth.NewValidator(cfg.BotServiceToken),
 			peopleService,
+			botapi.NewRouter(pool, interactionService),
 		),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,

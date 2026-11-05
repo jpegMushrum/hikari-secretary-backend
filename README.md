@@ -20,13 +20,16 @@ Go-бэкенд платформы Hikari Secretary. Это модульный �
 - допуск в административный API только Telegram ID из конфигурации;
 - синхронизация Telegram-идентичности из бота по отдельному межсервисному
   токену;
+- закрытый Bot API для профиля, мероприятий, регистраций, посещаемости,
+  отзывов и scheduler-операций;
 - административный список людей с разрешёнными фильтрами, сортировками и
   размерами страницы `10`, `20`, `30`;
 - начальный OpenAPI-контракт и закрытый `GET /api/v1/admin/me`.
 
-Мероприятия, регистрации, отзывы и публикации будут получать свои use-cases и
-API следующими вертикальными срезами. Текущий Python-бот `v0.9.0` пока
-продолжает работать со своей SQLite-базой и не зависит от этого сервиса.
+В режиме backend Python-бот `v0.9.0` уже направляет в этот сервис профили,
+мероприятия, регистрации, посещаемость, отзывы, напоминания и статистику.
+SQLite в боте намеренно сохраняет публикации, media, delivery, AI-историю и
+временные диалоги до следующих вертикальных срезов.
 
 ## Быстрый старт для разработки
 
@@ -91,13 +94,30 @@ docker compose up --build                 # база, мигратор и API
 docker compose logs -f api                # логи API
 docker compose down                       # остановка контейнеров
 docker compose down -v                    # удалить только локальный том PostgreSQL
+go run ./cmd/import-legacy --sqlite ../data/bot.sqlite3 --json
+go run ./cmd/import-legacy --sqlite ../data/bot.sqlite3 --apply \
+  --database-url "$DATABASE_URL"
+docker compose run --rm --no-deps \
+  -v "$(pwd)/../data:/legacy:ro" --entrypoint /app/import-legacy api \
+  --sqlite /legacy/bot.sqlite3 --apply \
+  --database-url "postgres://hikari:<password>@database:5432/hikari?sslmode=disable"
 docker run --rm --mount type=bind,src="$(pwd)",dst=/src,readonly \
   -w /src golang:1.27.3-alpine go test ./... # тесты в контейнере
 ```
 
+Перед переключением бота сначала выполните dry-run, остановите его, сделайте
+резервную копию `data/bot.sqlite3`, затем повторите команду с `--apply`.
+Импортёр переносит исторические профили, мероприятия, регистрации,
+посещаемость и отзывы; повторный запуск идемпотентен.
+
 Последняя команда не использует работающую базу: тесты текущего этапа покрывают
 конфигурацию, проверку Telegram-подписи, роли, сервисную авторизацию и HTTP
 endpoints.
+
+`import-legacy` без `--apply` выполняет только read-only dry-run. `--apply`
+повторно запускает dry-run перед одной транзакцией PostgreSQL и использует
+`legacy_import_map`, поэтому повторный запуск не создаёт дубликаты. Запускайте
+его после остановки бота и резервного копирования SQLite.
 
 ## Структура
 

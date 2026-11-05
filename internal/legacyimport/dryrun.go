@@ -21,6 +21,8 @@ const expectedSQLiteSchemaVersion = 6
 
 var requiredTables = []string{
 	"schema_migrations",
+	"posts",
+	"deliveries",
 	"user_profiles",
 	"events",
 	"registrations",
@@ -56,6 +58,7 @@ type Report struct {
 	Valid            bool    `json:"valid"`
 	Counts           Counts  `json:"counts"`
 	Issues           []Issue `json:"issues"`
+	Applied          bool    `json:"applied"`
 }
 
 type validator struct {
@@ -141,6 +144,10 @@ func openReadOnly(path string) (*sql.DB, error) {
 	uri := &url.URL{Scheme: "file", Path: uriPath}
 	query := url.Values{}
 	query.Set("mode", "ro")
+	// The bot database uses WAL mode. During the stopped-bot cutover the source
+	// must be immutable: this prevents SQLite from trying to create -wal/-shm
+	// sidecar files on the read-only bind mount.
+	query.Set("immutable", "1")
 	uri.RawQuery = query.Encode()
 
 	database, err := sql.Open("sqlite", uri.String())

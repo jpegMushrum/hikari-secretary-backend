@@ -39,6 +39,7 @@ func NewRouter(
 	adminTelegramIDs map[int64]struct{},
 	botAuthenticator *serviceauth.Validator,
 	people PeopleService,
+	botAPI http.Handler,
 ) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", health)
@@ -46,6 +47,9 @@ func NewRouter(
 	mux.Handle("GET /api/v1/admin/me", requireAdmin(authenticator, adminTelegramIDs, http.HandlerFunc(currentAdministrator)))
 	mux.Handle("GET /api/v1/admin/people", requireAdmin(authenticator, adminTelegramIDs, http.HandlerFunc(listPeople(people))))
 	mux.Handle("POST /internal/bot/v1/people/identity", requireBotService(botAuthenticator, http.HandlerFunc(syncTelegramIdentity(people))))
+	if botAPI != nil {
+		mux.Handle("/internal/bot/v1/", requireBotService(botAuthenticator, botAPI))
+	}
 	return secureHeaders(mux)
 }
 

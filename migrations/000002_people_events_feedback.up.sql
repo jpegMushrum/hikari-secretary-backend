@@ -55,6 +55,7 @@ CREATE TABLE event_publication_references (
     event_id BIGINT PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE,
     provider TEXT NOT NULL,
     external_publication_id TEXT NOT NULL,
+    published BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT event_publication_references_provider CHECK (
         provider IN ('legacy_sqlite', 'hikari_publishing')

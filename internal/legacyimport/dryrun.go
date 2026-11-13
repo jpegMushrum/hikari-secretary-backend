@@ -23,6 +23,7 @@ var requiredTables = []string{
 	"schema_migrations",
 	"posts",
 	"deliveries",
+	"media",
 	"user_profiles",
 	"events",
 	"registrations",

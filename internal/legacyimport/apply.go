@@ -41,18 +41,39 @@ type legacyFeedback struct {
 	text, createdAt    sql.NullString
 }
 
+// legacyScheduledPublication is a pending Telegram delivery at the cutover
+// boundary. Drafts and completed publications are intentionally not imported.
+type legacyScheduledPublication struct {
+	id, creatorID                       int64
+	text, entities, richMessage, source string
+	scheduledAt, createdAt              string
+	media                               []legacyMedia
+	deliveries                          []legacyDelivery
+}
+type legacyMedia struct {
+	position int
+	path     string
+}
+type legacyDelivery struct {
+	platform, key, name, destination, status string
+	thread                                   *int64
+	attempts                                 int
+	nextAttempt                              string
+}
+
 type legacySnapshot struct {
 	profiles      map[int64]legacyProfile
 	events        map[int64]legacyEvent
 	registrations []legacyRegistration
 	feedback      []legacyFeedback
+	publications  []legacyScheduledPublication
 	people        map[int64]struct{}
 }
 
-// Apply validates the source again, then imports the first domain slice in a
-// single PostgreSQL transaction. legacy_import_map makes a rerun idempotent.
-// It never deletes source data and should only be called during the cutover
-// window while the bot is stopped.
+// Apply validates the source again, then imports the first domain slice and
+// pending Telegram publications in one PostgreSQL transaction.
+// legacy_import_map makes a rerun idempotent. It never deletes source data and
+// should only be called during the cutover window while the bot is stopped.
 func Apply(ctx context.Context, sourceSQLitePath, databaseURL string) (Report, error) {
 	report, err := DryRun(ctx, sourceSQLitePath)
 	if err != nil {
@@ -88,6 +109,9 @@ func Apply(ctx context.Context, sourceSQLitePath, databaseURL string) (Report, e
 
 	people, err := importPeople(ctx, transaction, snapshot)
 	if err == nil {
+		err = importScheduledPublications(ctx, transaction, snapshot)
+	}
+	if err == nil {
 		err = importEvents(ctx, transaction, snapshot, people)
 	}
 	if err == nil {
@@ -95,6 +119,12 @@ func Apply(ctx context.Context, sourceSQLitePath, databaseURL string) (Report, e
 	}
 	if err == nil {
 		err = importFeedback(ctx, transaction, snapshot, people)
+	}
+	if err == nil {
+		// Importing legacy event references happens after migrations. Keep the
+		// new publication sequence above every numeric legacy post ID so a new
+		// draft can never reuse a historical event reference.
+		_, err = transaction.Exec(ctx, `SELECT setval(pg_get_serial_sequence('publications','id'), GREATEST(1, COALESCE((SELECT MAX(id) FROM publications),1), COALESCE((SELECT MAX(external_publication_id::BIGINT) FROM event_publication_references WHERE external_publication_id ~ '^[0-9]+$'),1)), true)`)
 	}
 	if err != nil {
 		return report, fmt.Errorf("apply legacy import: %w", err)
@@ -194,7 +224,95 @@ func loadSnapshot(ctx context.Context, source *sql.DB) (legacySnapshot, error) {
 		return snapshot, fmt.Errorf("iterate feedback for import: %w", err)
 	}
 	rows.Close()
+
+	// Every scheduled post is still actionable at the cutover boundary. This
+	// includes ordinary posts and AI materials as well as event publications.
+	rows, err = source.QueryContext(ctx, `SELECT id,creator_id,text,entities_json,COALESCE(rich_message_json,''),COALESCE(source,'admin'),scheduled_at,created_at FROM posts WHERE status='scheduled' ORDER BY id`)
+	if err != nil {
+		return snapshot, fmt.Errorf("read scheduled publications for import: %w", err)
+	}
+	for rows.Next() {
+		var p legacyScheduledPublication
+		if err := rows.Scan(&p.id, &p.creatorID, &p.text, &p.entities, &p.richMessage, &p.source, &p.scheduledAt, &p.createdAt); err != nil {
+			rows.Close()
+			return snapshot, err
+		}
+		snapshot.publications = append(snapshot.publications, p)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return snapshot, err
+	}
+	rows.Close()
+	for index := range snapshot.publications {
+		p := &snapshot.publications[index]
+		mediaRows, err := source.QueryContext(ctx, `SELECT position,path FROM media WHERE post_id=? ORDER BY position`, p.id)
+		if err != nil {
+			return snapshot, err
+		}
+		for mediaRows.Next() {
+			var m legacyMedia
+			if err = mediaRows.Scan(&m.position, &m.path); err != nil {
+				mediaRows.Close()
+				return snapshot, err
+			}
+			p.media = append(p.media, m)
+		}
+		mediaRows.Close()
+		deliveryRows, err := source.QueryContext(ctx, `SELECT platform,target_key,target_name,destination,message_thread_id,status,attempts,next_attempt_at FROM deliveries WHERE post_id=? ORDER BY id`, p.id)
+		if err != nil {
+			return snapshot, err
+		}
+		for deliveryRows.Next() {
+			var d legacyDelivery
+			if err = deliveryRows.Scan(&d.platform, &d.key, &d.name, &d.destination, &d.thread, &d.status, &d.attempts, &d.nextAttempt); err != nil {
+				deliveryRows.Close()
+				return snapshot, err
+			}
+			p.deliveries = append(p.deliveries, d)
+		}
+		deliveryRows.Close()
+	}
 	return snapshot, nil
+}
+
+func importScheduledPublications(ctx context.Context, tx pgx.Tx, snapshot legacySnapshot) error {
+	for _, p := range snapshot.publications {
+		at, err := parseLegacyTime(p.scheduledAt)
+		if err != nil {
+			return fmt.Errorf("publication %d has invalid schedule: %w", p.id, err)
+		}
+		created, err := parseLegacyTime(p.createdAt)
+		if err != nil {
+			created = time.Now().UTC()
+		}
+		_, err = tx.Exec(ctx, `INSERT INTO publications(id,creator_telegram_id,text,entities,rich_message,status,scheduled_at,source,created_at) VALUES($1,$2,$3,$4::jsonb,NULLIF($5,'')::jsonb,'scheduled',$6,$7,$8) ON CONFLICT(id) DO UPDATE SET creator_telegram_id=EXCLUDED.creator_telegram_id,text=EXCLUDED.text,entities=EXCLUDED.entities,rich_message=EXCLUDED.rich_message,status='scheduled',scheduled_at=EXCLUDED.scheduled_at,source=EXCLUDED.source`, p.id, p.creatorID, p.text, p.entities, p.richMessage, at, p.source, created)
+		if err != nil {
+			return err
+		}
+		for _, m := range p.media {
+			if _, err = tx.Exec(ctx, `INSERT INTO publication_media(publication_id,position,path) VALUES($1,$2,$3) ON CONFLICT(publication_id,position) DO UPDATE SET path=EXCLUDED.path`, p.id, m.position, m.path); err != nil {
+				return err
+			}
+		}
+		for _, d := range p.deliveries {
+			if d.status == "publishing" {
+				// A process may have been stopped after claiming a delivery. The
+				// legacy startup recovery changed it back to retry; preserve that
+				// safety property during the one-way import.
+				d.status = "retry"
+			}
+			next, _ := parseLegacyTime(d.nextAttempt)
+			if next.IsZero() {
+				next = at
+			}
+			if _, err = tx.Exec(ctx, `INSERT INTO publication_deliveries(publication_id,platform,target_key,target_name,destination,message_thread_id,status,attempts,next_attempt_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(publication_id,target_key) DO UPDATE SET target_name=EXCLUDED.target_name,destination=EXCLUDED.destination,message_thread_id=EXCLUDED.message_thread_id,status=EXCLUDED.status,attempts=EXCLUDED.attempts,next_attempt_at=EXCLUDED.next_attempt_at`, p.id, d.platform, d.key, d.name, d.destination, d.thread, d.status, d.attempts, next); err != nil {
+				return err
+			}
+		}
+	}
+	_, err := tx.Exec(ctx, `SELECT setval(pg_get_serial_sequence('publications','id'), GREATEST((SELECT COALESCE(MAX(id),1) FROM publications),1), true)`)
+	return err
 }
 
 func importPeople(ctx context.Context, tx pgx.Tx, snapshot legacySnapshot) (map[int64]int64, error) {

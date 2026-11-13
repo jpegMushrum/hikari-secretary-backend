@@ -77,8 +77,9 @@ func createLegacySQLite(t *testing.T, brokenFeedbackReference bool) string {
 
 	for _, statement := range []string{
 		`CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY)`,
-		`CREATE TABLE posts (id INTEGER PRIMARY KEY, text TEXT)`,
-		`CREATE TABLE deliveries (id INTEGER PRIMARY KEY, post_id INTEGER, status TEXT)`,
+		`CREATE TABLE posts (id INTEGER PRIMARY KEY, creator_id INTEGER, text TEXT, entities_json TEXT, rich_message_json TEXT, source TEXT, status TEXT, scheduled_at TEXT, created_at TEXT)`,
+		`CREATE TABLE deliveries (id INTEGER PRIMARY KEY, post_id INTEGER, platform TEXT, target_key TEXT, target_name TEXT, destination TEXT, message_thread_id INTEGER, status TEXT, attempts INTEGER, next_attempt_at TEXT)`,
+		`CREATE TABLE media (post_id INTEGER, position INTEGER, path TEXT)`,
 		`CREATE TABLE user_profiles (
 			user_id INTEGER PRIMARY KEY, full_name TEXT, telegram_username TEXT,
 			telegram_first_name TEXT, telegram_last_name TEXT,
@@ -141,6 +142,37 @@ func createLegacySQLite(t *testing.T, brokenFeedbackReference bool) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestLoadSnapshotIncludesScheduledNonEventPublication(t *testing.T) {
+	source := createLegacySQLite(t, false)
+	database, err := sql.Open("sqlite", source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	const scheduledAt = "2099-01-01T10:00:00+00:00"
+	if _, err = database.Exec(`INSERT INTO posts(id,creator_id,text,entities_json,rich_message_json,source,status,scheduled_at,created_at) VALUES(77,100,'Ordinary scheduled post','[]','', 'admin','scheduled',?,?)`, scheduledAt, scheduledAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = database.Exec(`INSERT INTO deliveries(post_id,platform,target_key,target_name,destination,message_thread_id,status,attempts,next_attempt_at) VALUES(77,'telegram','main','Main','-100',NULL,'pending',0,?)`, scheduledAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = database.Exec(`INSERT INTO media(post_id,position,path) VALUES(77,0,'/app/data/media/post.jpg')`); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot, err := loadSnapshot(context.Background(), database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.publications) != 1 {
+		t.Fatalf("scheduled publications = %d, want 1", len(snapshot.publications))
+	}
+	publication := snapshot.publications[0]
+	if publication.id != 77 || len(publication.deliveries) != 1 || len(publication.media) != 1 {
+		t.Fatalf("unexpected publication snapshot: %#v", publication)
+	}
 }
 
 func hasIssue(report Report, table, legacyID, code string) bool {

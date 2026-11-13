@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -18,6 +19,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	interactions "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/interactions/application"
+	publishing "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/application"
+	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/domain"
 )
 
 const (
@@ -26,12 +29,13 @@ const (
 )
 
 type Handler struct {
-	pool  *pgxpool.Pool
-	flows *interactions.Service
+	pool         *pgxpool.Pool
+	flows        *interactions.Service
+	publications *publishing.Service
 }
 
-func NewRouter(pool *pgxpool.Pool, flows *interactions.Service) http.Handler {
-	h := &Handler{pool: pool, flows: flows}
+func NewRouter(pool *pgxpool.Pool, flows *interactions.Service, publications *publishing.Service) http.Handler {
+	h := &Handler{pool: pool, flows: flows, publications: publications}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /people/profile", h.upsertProfile)
 	mux.HandleFunc("GET /people/{telegram_id}", h.getProfile)
@@ -63,6 +67,27 @@ func NewRouter(pool *pgxpool.Pool, flows *interactions.Service) http.Handler {
 	mux.HandleFunc("GET /feedback", h.feedbackPage)
 	mux.HandleFunc("GET /feedback/{id}", h.feedbackEntry)
 	mux.HandleFunc("GET /statistics/people", h.peopleStatistics)
+	mux.HandleFunc("POST /publications", h.createPublication)
+	mux.HandleFunc("POST /publications/scheduled", h.createScheduledPublication)
+	mux.HandleFunc("GET /publications", h.listPublications)
+	mux.HandleFunc("GET /publications/{id}", h.getPublication)
+	mux.HandleFunc("POST /publications/{id}/targets/toggle", h.togglePublicationTarget)
+	mux.HandleFunc("POST /publications/{id}/schedule", h.schedulePublication)
+	mux.HandleFunc("POST /publications/{id}/cancel", h.cancelPublication)
+	mux.HandleFunc("POST /deliveries/claim", h.claimDelivery)
+	mux.HandleFunc("POST /deliveries/recover", h.recoverDeliveries)
+	mux.HandleFunc("POST /deliveries/{id}/succeeded", h.deliverySucceeded)
+	mux.HandleFunc("POST /deliveries/{id}/failed", h.deliveryFailed)
+	mux.HandleFunc("GET /publication-notifications", h.publicationNotices)
+	mux.HandleFunc("POST /publication-notifications/{id}/sent", h.markPublicationNotified)
+	mux.HandleFunc("GET /ai-topics/preferences", h.aiPreferences)
+	mux.HandleFunc("PUT /ai-topics/preferences", h.saveAIPreferences)
+	mux.HandleFunc("POST /ai-topics/jobs", h.enqueueAIJob)
+	mux.HandleFunc("POST /ai-topics/jobs/claim", h.claimAIJob)
+	mux.HandleFunc("GET /ai-topics/history", h.aiHistory)
+	mux.HandleFunc("POST /ai-topics/jobs/{id}/scheduled", h.aiJobScheduled)
+	mux.HandleFunc("POST /ai-topics/jobs/{id}/failed", h.aiJobFailed)
+	mux.HandleFunc("POST /ai-topics/history/{publication_id}", h.replaceAITopic)
 	return http.StripPrefix("/internal/bot/v1", mux)
 }
 
@@ -252,6 +277,417 @@ func (h *Handler) deleteFlow(writer http.ResponseWriter, request *http.Request) 
 		return
 	}
 	writeJSON(writer, http.StatusOK, map[string]any{"deleted": true})
+}
+
+type publicationRequest struct {
+	CreatorID   int64            `json:"creator_id"`
+	Text        string           `json:"text"`
+	Entities    []map[string]any `json:"entities"`
+	MediaPaths  []string         `json:"media_paths"`
+	RichMessage map[string]any   `json:"rich_message"`
+	Source      string           `json:"source"`
+	SourceKey   string           `json:"source_key"`
+}
+
+func (h *Handler) createPublication(w http.ResponseWriter, r *http.Request) {
+	var body publicationRequest
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	id, err := h.publications.CreateDraft(r.Context(), domain.Draft{CreatorTelegramID: body.CreatorID, Text: body.Text, Entities: body.Entities, RichMessage: body.RichMessage, Media: mediaFromPaths(body.MediaPaths), Source: body.Source, SourceKey: body.SourceKey})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
+}
+
+type scheduledPublicationRequest struct {
+	publicationRequest
+	ScheduledAt string `json:"scheduled_at"`
+	Targets     []struct {
+		Key             string `json:"key"`
+		Name            string `json:"name"`
+		Destination     string `json:"destination"`
+		MessageThreadID *int64 `json:"message_thread_id"`
+	} `json:"targets"`
+}
+
+func (h *Handler) createScheduledPublication(w http.ResponseWriter, r *http.Request) {
+	var body scheduledPublicationRequest
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	scheduledAt, err := time.Parse(time.RFC3339, body.ScheduledAt)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	targets := make([]domain.Target, 0, len(body.Targets))
+	for _, target := range body.Targets {
+		targets = append(targets, domain.Target{
+			Key: target.Key, Name: target.Name, Destination: target.Destination,
+			MessageThreadID: target.MessageThreadID,
+		})
+	}
+	id, err := h.publications.CreateScheduled(r.Context(), domain.ScheduledDraft{
+		Draft: domain.Draft{
+			CreatorTelegramID: body.CreatorID, Text: body.Text, Entities: body.Entities,
+			RichMessage: body.RichMessage, Media: mediaFromPaths(body.MediaPaths),
+			Source: body.Source, SourceKey: body.SourceKey,
+		},
+		Targets: targets, ScheduledAt: scheduledAt,
+	})
+	if err != nil {
+		if errors.Is(err, domain.ErrPendingPublicationLimit) {
+			writeError(w, http.StatusConflict, "capacity_limit")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
+}
+func mediaFromPaths(paths []string) []domain.Media {
+	result := make([]domain.Media, 0, len(paths))
+	for i, path := range paths {
+		result = append(result, domain.Media{Position: i, Path: path})
+	}
+	return result
+}
+func (h *Handler) getPublication(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathInt64(r, "id")
+	if !ok {
+		writeError(w, 400, "invalid_request")
+		return
+	}
+	item, found, err := h.publications.Publication(r.Context(), id)
+	if err != nil {
+		writeError(w, 500, "internal_error")
+		return
+	}
+	if !found {
+		writeError(w, 404, "not_found")
+		return
+	}
+	writeJSON(w, 200, item)
+}
+func (h *Handler) listPublications(w http.ResponseWriter, r *http.Request) {
+	limit := 20
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 100 {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		limit = parsed
+	}
+	items, err := h.publications.Queue(r.Context(), limit)
+	if err != nil {
+		writeError(w, 500, "internal_error")
+		return
+	}
+	writeJSON(w, 200, items)
+}
+func (h *Handler) togglePublicationTarget(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathInt64(r, "id")
+	var body struct {
+		Key             string `json:"key"`
+		Name            string `json:"name"`
+		Destination     string `json:"destination"`
+		MessageThreadID *int64 `json:"message_thread_id"`
+	}
+	if !ok || !decodeJSON(w, r, &body) {
+		writeError(w, 400, "invalid_request")
+		return
+	}
+	if err := h.publications.ToggleTarget(r.Context(), id, domain.Target{Key: body.Key, Name: body.Name, Destination: body.Destination, MessageThreadID: body.MessageThreadID}); err != nil {
+		writeError(w, 409, "invalid_state")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true})
+}
+func (h *Handler) schedulePublication(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathInt64(r, "id")
+	var body struct {
+		ScheduledAt string `json:"scheduled_at"`
+	}
+	if !ok || !decodeJSON(w, r, &body) {
+		writeError(w, 400, "invalid_request")
+		return
+	}
+	at, err := time.Parse(time.RFC3339, body.ScheduledAt)
+	if err != nil {
+		writeError(w, 400, "invalid_request")
+		return
+	}
+	scheduled, err := h.publications.Schedule(r.Context(), id, at)
+	if err != nil {
+		if errors.Is(err, domain.ErrPendingPublicationLimit) {
+			writeError(w, http.StatusConflict, "capacity_limit")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal_error")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"scheduled": scheduled})
+}
+func (h *Handler) cancelPublication(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathInt64(r, "id")
+	if !ok {
+		writeError(w, 400, "invalid_request")
+		return
+	}
+	cancelled, err := h.publications.Cancel(r.Context(), id)
+	if err != nil {
+		writeError(w, 500, "internal_error")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"cancelled": cancelled})
+}
+func (h *Handler) claimDelivery(w http.ResponseWriter, r *http.Request) {
+	delivery, err := h.publications.ClaimDue(r.Context())
+	if err != nil {
+		writeError(w, 500, "internal_error")
+		return
+	}
+	if delivery == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	writeJSON(w, 200, delivery)
+}
+func (h *Handler) recoverDeliveries(w http.ResponseWriter, r *http.Request) {
+	if err := h.publications.RecoverInterruptedDeliveries(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+func (h *Handler) deliverySucceeded(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathInt64(r, "id")
+	var body struct {
+		ExternalID string `json:"external_id"`
+	}
+	if !ok || !decodeJSON(w, r, &body) {
+		writeError(w, 400, "invalid_request")
+		return
+	}
+	if err := h.publications.Succeeded(r.Context(), id, body.ExternalID); err != nil {
+		writeError(w, 500, "internal_error")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true})
+}
+func (h *Handler) deliveryFailed(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathInt64(r, "id")
+	var body struct {
+		Reason      string `json:"reason"`
+		MaxAttempts int    `json:"max_attempts"`
+	}
+	if !ok || !decodeJSON(w, r, &body) {
+		writeError(w, 400, "invalid_request")
+		return
+	}
+	if err := h.publications.Failed(r.Context(), id, body.Reason, body.MaxAttempts); err != nil {
+		writeError(w, 400, "invalid_request")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true})
+}
+func (h *Handler) publicationNotices(w http.ResponseWriter, r *http.Request) {
+	notices, err := h.publications.Notices(r.Context())
+	if err != nil {
+		writeError(w, 500, "internal_error")
+		return
+	}
+	writeJSON(w, 200, notices)
+}
+func (h *Handler) markPublicationNotified(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathInt64(r, "id")
+	if !ok {
+		writeError(w, 400, "invalid_request")
+		return
+	}
+	if err := h.publications.MarkNotified(r.Context(), id); err != nil {
+		writeError(w, 500, "internal_error")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
+func (h *Handler) aiPreferences(w http.ResponseWriter, r *http.Request) {
+	var level string
+	var comment *string
+	err := h.pool.QueryRow(r.Context(), `SELECT jlpt_level,admin_comment FROM ai_topic_settings WHERE id=1`).Scan(&level, &comment)
+	if err != nil {
+		writeError(w, 500, "internal_error")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"jlpt_level": level, "admin_comment": comment})
+}
+func (h *Handler) saveAIPreferences(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		JLPTLevel    string  `json:"jlpt_level"`
+		AdminComment *string `json:"admin_comment"`
+		UpdatedBy    int64   `json:"updated_by"`
+	}
+	if !decodeJSON(w, r, &body) || !map[string]bool{"N5": true, "N4": true, "N3": true, "N2": true, "N1": true}[body.JLPTLevel] {
+		writeError(w, 400, "invalid_request")
+		return
+	}
+	if body.AdminComment != nil && utf8.RuneCountInString(*body.AdminComment) > 500 {
+		writeError(w, 400, "invalid_request")
+		return
+	}
+	_, err := h.pool.Exec(r.Context(), `UPDATE ai_topic_settings SET jlpt_level=$1,admin_comment=$2,updated_by=$3,updated_at=NOW() WHERE id=1`, body.JLPTLevel, body.AdminComment, body.UpdatedBy)
+	if err != nil {
+		writeError(w, 500, "internal_error")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true})
+}
+func (h *Handler) enqueueAIJob(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ScheduledFor  string `json:"scheduled_for"`
+		AvailableAt   string `json:"available_at"`
+		PromptVersion string `json:"prompt_version"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	scheduled, err := time.Parse(time.RFC3339, body.ScheduledFor)
+	if err != nil {
+		writeError(w, 400, "invalid_request")
+		return
+	}
+	available := scheduled
+	if body.AvailableAt != "" {
+		available, err = time.Parse(time.RFC3339, body.AvailableAt)
+		if err != nil {
+			writeError(w, 400, "invalid_request")
+			return
+		}
+	}
+	var id int64
+	err = h.pool.QueryRow(r.Context(), `INSERT INTO ai_topic_jobs(scheduled_for,status,next_attempt_at,prompt_version) VALUES($1,'pending',$2,$3) ON CONFLICT(scheduled_for) DO UPDATE SET status=CASE WHEN ai_topic_jobs.status='failed' AND ai_topic_jobs.prompt_version IS DISTINCT FROM EXCLUDED.prompt_version THEN 'pending' ELSE ai_topic_jobs.status END,attempts=CASE WHEN ai_topic_jobs.status='failed' AND ai_topic_jobs.prompt_version IS DISTINCT FROM EXCLUDED.prompt_version THEN 0 ELSE ai_topic_jobs.attempts END,next_attempt_at=CASE WHEN ai_topic_jobs.status='failed' AND ai_topic_jobs.prompt_version IS DISTINCT FROM EXCLUDED.prompt_version THEN EXCLUDED.next_attempt_at ELSE ai_topic_jobs.next_attempt_at END,prompt_version=EXCLUDED.prompt_version,last_error=CASE WHEN ai_topic_jobs.status='failed' AND ai_topic_jobs.prompt_version IS DISTINCT FROM EXCLUDED.prompt_version THEN NULL ELSE ai_topic_jobs.last_error END,updated_at=NOW() RETURNING id`, scheduled, available, body.PromptVersion).Scan(&id)
+	if err != nil {
+		writeError(w, 500, "internal_error")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"id": id})
+}
+func (h *Handler) claimAIJob(w http.ResponseWriter, r *http.Request) {
+	tx, err := h.pool.Begin(r.Context())
+	if err != nil {
+		writeError(w, 500, "internal_error")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	var id int64
+	var scheduled time.Time
+	var attempts int
+	var version *string
+	err = tx.QueryRow(r.Context(), `SELECT id,scheduled_for,attempts,prompt_version FROM ai_topic_jobs WHERE status IN ('pending','retry') AND next_attempt_at<=NOW() ORDER BY next_attempt_at,id FOR UPDATE SKIP LOCKED LIMIT 1`).Scan(&id, &scheduled, &attempts, &version)
+	if errors.Is(err, pgx.ErrNoRows) {
+		_ = tx.Commit(r.Context())
+		w.WriteHeader(204)
+		return
+	}
+	if err != nil {
+		writeError(w, 500, "internal_error")
+		return
+	}
+	_, err = tx.Exec(r.Context(), `UPDATE ai_topic_jobs SET status='generating',attempts=attempts+1,updated_at=NOW() WHERE id=$1`, id)
+	if err != nil || tx.Commit(r.Context()) != nil {
+		writeError(w, 500, "internal_error")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"id": id, "scheduled_for": scheduled, "attempts": attempts + 1, "prompt_version": version})
+}
+func (h *Handler) aiHistory(w http.ResponseWriter, r *http.Request) {
+	rows, err := h.pool.Query(r.Context(), `SELECT topic FROM ai_topic_jobs WHERE status='scheduled' AND topic IS NOT NULL ORDER BY scheduled_for DESC`)
+	if err != nil {
+		writeError(w, 500, "internal_error")
+		return
+	}
+	defer rows.Close()
+	items := []any{}
+	for rows.Next() {
+		var topic []byte
+		if err = rows.Scan(&topic); err != nil {
+			writeError(w, 500, "internal_error")
+			return
+		}
+		var value any
+		if json.Unmarshal(topic, &value) == nil {
+			items = append(items, value)
+		}
+	}
+	writeJSON(w, 200, items)
+}
+func (h *Handler) aiJobScheduled(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathInt64(r, "id")
+	var body struct {
+		PublicationID int64 `json:"publication_id"`
+		Topic         any   `json:"topic"`
+	}
+	if !ok || !decodeJSON(w, r, &body) || body.PublicationID <= 0 {
+		writeError(w, 400, "invalid_request")
+		return
+	}
+	raw, _ := json.Marshal(body.Topic)
+	command, err := h.pool.Exec(r.Context(), `UPDATE ai_topic_jobs SET status='scheduled',publication_id=$2,topic=$3::jsonb,last_error=NULL,updated_at=NOW() WHERE id=$1 AND status='generating'`, id, body.PublicationID, string(raw))
+	if err != nil || command.RowsAffected() != 1 {
+		writeError(w, 409, "invalid_state")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true})
+}
+func (h *Handler) aiJobFailed(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathInt64(r, "id")
+	var body struct {
+		Error   string  `json:"error"`
+		RetryAt *string `json:"retry_at"`
+	}
+	if !ok || !decodeJSON(w, r, &body) {
+		writeError(w, 400, "invalid_request")
+		return
+	}
+	status := "failed"
+	var at any = time.Now().UTC()
+	if body.RetryAt != nil {
+		parsed, err := time.Parse(time.RFC3339, *body.RetryAt)
+		if err != nil {
+			writeError(w, 400, "invalid_request")
+			return
+		}
+		status = "retry"
+		at = parsed
+	}
+	command, err := h.pool.Exec(r.Context(), `UPDATE ai_topic_jobs SET status=$2,next_attempt_at=$3,last_error=$4,updated_at=NOW() WHERE id=$1 AND status='generating'`, id, status, at, body.Error)
+	if err != nil || command.RowsAffected() != 1 {
+		writeError(w, 409, "invalid_state")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true})
+}
+func (h *Handler) replaceAITopic(w http.ResponseWriter, r *http.Request) {
+	post, ok := pathInt64(r, "publication_id")
+	var body struct {
+		Topic any `json:"topic"`
+	}
+	if !ok || !decodeJSON(w, r, &body) {
+		writeError(w, 400, "invalid_request")
+		return
+	}
+	raw, _ := json.Marshal(body.Topic)
+	command, err := h.pool.Exec(r.Context(), `UPDATE ai_topic_jobs SET topic=$2::jsonb,updated_at=NOW() WHERE publication_id=$1 AND status='scheduled'`, post, string(raw))
+	if err != nil {
+		writeError(w, 500, "internal_error")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"replaced": command.RowsAffected() == 1})
 }
 
 func (h *Handler) toggleFeedback(writer http.ResponseWriter, request *http.Request) {
@@ -1067,7 +1503,7 @@ func scanEventRows(rows pgx.Rows) ([]map[string]any, error) {
 		if err := rows.Scan(&postID, &title, &start, &end); err != nil {
 			return nil, err
 		}
-		items = append(items, map[string]any{"post_id": postID, "title": title, "text": title, "starts_at": start.UTC(), "ends_at": end.UTC})
+		items = append(items, map[string]any{"post_id": postID, "title": title, "text": title, "starts_at": start.UTC(), "ends_at": end.UTC()})
 	}
 	return items, rows.Err()
 }
@@ -1081,7 +1517,15 @@ func writeError(writer http.ResponseWriter, status int, code string) {
 	writeJSON(writer, status, map[string]string{"error": code})
 }
 func writeJSON(writer http.ResponseWriter, status int, value any) {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		log.Printf("bot API JSON serialization failed: %v", err)
+		writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+		writer.WriteHeader(http.StatusInternalServerError)
+		_, _ = writer.Write([]byte(`{"error":"serialization_error"}`))
+		return
+	}
 	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
 	writer.WriteHeader(status)
-	_ = json.NewEncoder(writer).Encode(value)
+	_, _ = writer.Write(append(payload, '\n'))
 }

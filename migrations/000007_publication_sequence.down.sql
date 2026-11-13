@@ -1,0 +1,1 @@
+-- Sequence state is intentionally not rolled back.

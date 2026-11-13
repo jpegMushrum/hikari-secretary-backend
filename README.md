@@ -26,10 +26,9 @@ Go-бэкенд платформы Hikari Secretary. Это модульный �
   размерами страницы `10`, `20`, `30`;
 - начальный OpenAPI-контракт и закрытый `GET /api/v1/admin/me`.
 
-В режиме backend Python-бот `v0.9.0` уже направляет в этот сервис профили,
-мероприятия, регистрации, посещаемость, отзывы, напоминания и статистику.
-SQLite в боте намеренно сохраняет публикации, media, delivery, AI-историю и
-временные диалоги до следующих вертикальных срезов.
+Python-бот направляет в этот сервис профили, мероприятия, регистрации,
+посещаемость, отзывы, напоминания, публикации, delivery, AI-историю и
+временные диалоги. SQLite служит только входом одноразового импортёра.
 
 ## Быстрый старт для разработки
 
@@ -103,6 +102,8 @@ docker compose run --rm --no-deps \
   --database-url "postgres://hikari:<password>@database:5432/hikari?sslmode=disable"
 docker run --rm --mount type=bind,src="$(pwd)",dst=/src,readonly \
   -w /src golang:1.27.3-alpine go test ./... # тесты в контейнере
+# Сначала примените миграции к локальной test/dev БД: docker compose up --build migrate
+TEST_DATABASE_URL="postgres://..." go test -count=1 -tags=integration ./internal/platform/migrations ./internal/adapters/botapi
 ```
 
 Перед переключением бота сначала выполните dry-run, остановите его, сделайте

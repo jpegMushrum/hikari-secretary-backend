@@ -15,6 +15,8 @@ import (
 	interactionsapp "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/interactions/application"
 	peoplepostgres "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/people/adapters/postgres"
 	peopleapp "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/people/application"
+	publishingpostgres "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/adapters/postgres"
+	publishingapp "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/application"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/config"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/database"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/httpapi"
@@ -42,6 +44,11 @@ func main() {
 	defer pool.Close()
 	peopleService := peopleapp.NewService(peoplepostgres.NewRepository(pool))
 	interactionService := interactionsapp.NewService(interactionspostgres.NewRepository(pool))
+	publishingService := publishingapp.NewService(publishingpostgres.NewRepository(pool))
+	if err := publishingService.RecoverInterruptedDeliveries(ctx); err != nil {
+		logger.Error("recover interrupted publication deliveries", "error", err)
+		os.Exit(1)
+	}
 
 	server := &http.Server{
 		Addr: cfg.HTTPAddress,
@@ -51,7 +58,7 @@ func main() {
 			cfg.AdminTelegramIDs,
 			serviceauth.NewValidator(cfg.BotServiceToken),
 			peopleService,
-			botapi.NewRouter(pool, interactionService),
+			botapi.NewRouter(pool, interactionService, publishingService),
 		),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,

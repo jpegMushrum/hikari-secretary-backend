@@ -75,6 +75,20 @@ func TestLoadRejectsInvalidValues(t *testing.T) {
 	})
 }
 
+func TestLoadAcceptsLegacyAdminIDsAlias(t *testing.T) {
+	setRequiredEnvironment(t)
+	t.Setenv("ADMIN_TELEGRAM_IDS", "")
+	t.Setenv("ADMIN_IDS", "789")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if _, ok := cfg.AdminTelegramIDs[789]; !ok {
+		t.Error("AdminTelegramIDs does not contain legacy ADMIN_IDS value")
+	}
+}
+
 func setRequiredEnvironment(t *testing.T) {
 	t.Helper()
 	t.Setenv("DATABASE_URL", "postgres://user:password@localhost:5432/hikari")

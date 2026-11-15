@@ -46,7 +46,14 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("TELEGRAM_INIT_DATA_MAX_AGE must be a positive duration")
 	}
 
-	adminTelegramIDs, err := parseTelegramIDs(os.Getenv("ADMIN_TELEGRAM_IDS"))
+	adminTelegramIDsRaw := strings.TrimSpace(os.Getenv("ADMIN_TELEGRAM_IDS"))
+	if adminTelegramIDsRaw == "" {
+		// ADMIN_IDS was used by the Telegram bot before the backend was split
+		// into a separate service. Keep it as a compatibility alias so an
+		// existing deployment can migrate without an avoidable startup outage.
+		adminTelegramIDsRaw = os.Getenv("ADMIN_IDS")
+	}
+	adminTelegramIDs, err := parseTelegramIDs(adminTelegramIDsRaw)
 	if err != nil {
 		return Config{}, err
 	}

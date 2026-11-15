@@ -17,8 +17,8 @@ func TestDryRunValidatesCompleteSourceWithoutChangingIt(t *testing.T) {
 	if !report.Valid {
 		t.Fatalf("report is invalid: %#v", report.Issues)
 	}
-	if report.SourceVersion != expectedSQLiteSchemaVersion {
-		t.Errorf("source version = %d, want %d", report.SourceVersion, expectedSQLiteSchemaVersion)
+	if report.SourceVersion != 6 {
+		t.Errorf("source version = %d, want 6", report.SourceVersion)
 	}
 	if report.Counts != (Counts{
 		Profiles:                    1,
@@ -77,7 +77,7 @@ func createLegacySQLite(t *testing.T, brokenFeedbackReference bool) string {
 
 	for _, statement := range []string{
 		`CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY)`,
-		`CREATE TABLE posts (id INTEGER PRIMARY KEY, creator_id INTEGER, text TEXT, entities_json TEXT, rich_message_json TEXT, source TEXT, status TEXT, scheduled_at TEXT, created_at TEXT)`,
+		`CREATE TABLE posts (id INTEGER PRIMARY KEY, creator_id INTEGER, text TEXT, entities_json TEXT, rich_message_json TEXT, source TEXT, source_key TEXT, status TEXT, scheduled_at TEXT, created_at TEXT)`,
 		`CREATE TABLE deliveries (id INTEGER PRIMARY KEY, post_id INTEGER, platform TEXT, target_key TEXT, target_name TEXT, destination TEXT, message_thread_id INTEGER, status TEXT, attempts INTEGER, next_attempt_at TEXT)`,
 		`CREATE TABLE media (post_id INTEGER, position INTEGER, path TEXT)`,
 		`CREATE TABLE user_profiles (
@@ -101,6 +101,8 @@ func createLegacySQLite(t *testing.T, brokenFeedbackReference bool) string {
 			id INTEGER PRIMARY KEY, user_id INTEGER, post_id INTEGER,
 			text TEXT, created_at TEXT
 		)`,
+		`CREATE TABLE ai_topic_settings (id INTEGER PRIMARY KEY, jlpt_level TEXT, admin_comment TEXT, updated_by INTEGER, updated_at TEXT)`,
+		`CREATE TABLE ai_topic_jobs (id INTEGER PRIMARY KEY, scheduled_for TEXT, status TEXT, attempts INTEGER, next_attempt_at TEXT, prompt_version TEXT, topic_json TEXT, post_id INTEGER, last_error TEXT, created_at TEXT, updated_at TEXT)`,
 	} {
 		if _, err := database.Exec(statement); err != nil {
 			t.Fatal(err)
@@ -172,6 +174,37 @@ func TestLoadSnapshotIncludesScheduledNonEventPublication(t *testing.T) {
 	publication := snapshot.publications[0]
 	if publication.id != 77 || len(publication.deliveries) != 1 || len(publication.media) != 1 {
 		t.Fatalf("unexpected publication snapshot: %#v", publication)
+	}
+}
+
+func TestDryRunAcceptsVersionFiveWithoutFeedbackTables(t *testing.T) {
+	source := createLegacySQLite(t, false)
+	database, err := sql.Open("sqlite", source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = database.Exec("UPDATE schema_migrations SET version=5"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = database.Exec("DROP TABLE feedback_entries"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = database.Exec("ALTER TABLE user_profiles DROP COLUMN feedback_enabled"); err != nil {
+		t.Fatal(err)
+	}
+	if err = database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := DryRun(context.Background(), source)
+	if err != nil {
+		t.Fatalf("DryRun() error = %v", err)
+	}
+	if !report.Valid {
+		t.Fatalf("version 5 report is invalid: %#v", report.Issues)
+	}
+	if report.SourceVersion != 5 || report.Counts.Feedback != 0 {
+		t.Fatalf("unexpected version 5 report: %#v", report)
 	}
 }
 

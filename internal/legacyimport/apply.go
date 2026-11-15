@@ -41,14 +41,28 @@ type legacyFeedback struct {
 	text, createdAt    sql.NullString
 }
 
+type legacyAISettings struct {
+	jlptLevel, updatedAt string
+	adminComment         sql.NullString
+	updatedBy            sql.NullInt64
+}
+
+type legacyAIJob struct {
+	id, attempts                        int64
+	scheduledFor, status, nextAttemptAt string
+	promptVersion, topic, lastError     sql.NullString
+	postID                              sql.NullInt64
+	createdAt, updatedAt                string
+}
+
 // legacyScheduledPublication is a pending Telegram delivery at the cutover
 // boundary. Drafts and completed publications are intentionally not imported.
 type legacyScheduledPublication struct {
-	id, creatorID                       int64
-	text, entities, richMessage, source string
-	scheduledAt, createdAt              string
-	media                               []legacyMedia
-	deliveries                          []legacyDelivery
+	id, creatorID                                  int64
+	text, entities, richMessage, source, sourceKey string
+	scheduledAt, createdAt                         string
+	media                                          []legacyMedia
+	deliveries                                     []legacyDelivery
 }
 type legacyMedia struct {
 	position int
@@ -67,6 +81,8 @@ type legacySnapshot struct {
 	registrations []legacyRegistration
 	feedback      []legacyFeedback
 	publications  []legacyScheduledPublication
+	aiSettings    *legacyAISettings
+	aiJobs        []legacyAIJob
 	people        map[int64]struct{}
 }
 
@@ -107,6 +123,15 @@ func Apply(ctx context.Context, sourceSQLitePath, databaseURL string) (Report, e
 	}
 	defer func() { _ = transaction.Rollback(ctx) }()
 
+	var importCompleted bool
+	if err := transaction.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM service_metadata WHERE key='legacy_sqlite_import_complete')`).Scan(&importCompleted); err != nil {
+		return report, fmt.Errorf("check legacy import marker: %w", err)
+	}
+	if importCompleted {
+		report.Applied = true
+		return report, nil
+	}
+
 	people, err := importPeople(ctx, transaction, snapshot)
 	if err == nil {
 		err = importScheduledPublications(ctx, transaction, snapshot)
@@ -121,10 +146,16 @@ func Apply(ctx context.Context, sourceSQLitePath, databaseURL string) (Report, e
 		err = importFeedback(ctx, transaction, snapshot, people)
 	}
 	if err == nil {
+		err = importAIState(ctx, transaction, snapshot)
+	}
+	if err == nil {
 		// Importing legacy event references happens after migrations. Keep the
 		// new publication sequence above every numeric legacy post ID so a new
 		// draft can never reuse a historical event reference.
 		_, err = transaction.Exec(ctx, `SELECT setval(pg_get_serial_sequence('publications','id'), GREATEST(1, COALESCE((SELECT MAX(id) FROM publications),1), COALESCE((SELECT MAX(external_publication_id::BIGINT) FROM event_publication_references WHERE external_publication_id ~ '^[0-9]+$'),1)), true)`)
+	}
+	if err == nil {
+		_, err = transaction.Exec(ctx, `INSERT INTO service_metadata(key,value) VALUES('legacy_sqlite_import_complete',jsonb_build_object('source_schema_version',$1::bigint,'completed_at',NOW()))`, report.SourceVersion)
 	}
 	if err != nil {
 		return report, fmt.Errorf("apply legacy import: %w", err)
@@ -142,7 +173,19 @@ func loadSnapshot(ctx context.Context, source *sql.DB) (legacySnapshot, error) {
 		events:   make(map[int64]legacyEvent),
 		people:   make(map[int64]struct{}),
 	}
-	rows, err := source.QueryContext(ctx, `SELECT user_id,full_name,telegram_username,telegram_first_name,telegram_last_name,is_russian_citizen,is_itmo_student,feedback_enabled,created_at,updated_at FROM user_profiles ORDER BY user_id`)
+	version, err := sourceSchemaVersion(ctx, source)
+	if err != nil {
+		return snapshot, err
+	}
+	tables, err := existingTables(ctx, source)
+	if err != nil {
+		return snapshot, err
+	}
+	feedbackColumn := "1 AS feedback_enabled"
+	if version >= 6 {
+		feedbackColumn = "feedback_enabled"
+	}
+	rows, err := source.QueryContext(ctx, fmt.Sprintf(`SELECT user_id,full_name,telegram_username,telegram_first_name,telegram_last_name,is_russian_citizen,is_itmo_student,%s,created_at,updated_at FROM user_profiles ORDER BY user_id`, feedbackColumn))
 	if err != nil {
 		return snapshot, fmt.Errorf("read profiles for import: %w", err)
 	}
@@ -204,36 +247,38 @@ func loadSnapshot(ctx context.Context, source *sql.DB) (legacySnapshot, error) {
 	}
 	rows.Close()
 
-	rows, err = source.QueryContext(ctx, `SELECT id,user_id,post_id,text,created_at FROM feedback_entries ORDER BY id`)
-	if err != nil {
-		return snapshot, fmt.Errorf("read feedback for import: %w", err)
-	}
-	for rows.Next() {
-		var feedback legacyFeedback
-		if err := rows.Scan(&feedback.id, &feedback.userID, &feedback.postID, &feedback.text, &feedback.createdAt); err != nil {
+	if tables["feedback_entries"] {
+		rows, err = source.QueryContext(ctx, `SELECT id,user_id,post_id,text,created_at FROM feedback_entries ORDER BY id`)
+		if err != nil {
+			return snapshot, fmt.Errorf("read feedback for import: %w", err)
+		}
+		for rows.Next() {
+			var feedback legacyFeedback
+			if err := rows.Scan(&feedback.id, &feedback.userID, &feedback.postID, &feedback.text, &feedback.createdAt); err != nil {
+				rows.Close()
+				return snapshot, fmt.Errorf("scan feedback for import: %w", err)
+			}
+			if feedback.userID.Valid {
+				snapshot.people[feedback.userID.Int64] = struct{}{}
+			}
+			snapshot.feedback = append(snapshot.feedback, feedback)
+		}
+		if err := rows.Err(); err != nil {
 			rows.Close()
-			return snapshot, fmt.Errorf("scan feedback for import: %w", err)
+			return snapshot, fmt.Errorf("iterate feedback for import: %w", err)
 		}
-		if feedback.userID.Valid {
-			snapshot.people[feedback.userID.Int64] = struct{}{}
-		}
-		snapshot.feedback = append(snapshot.feedback, feedback)
-	}
-	if err := rows.Err(); err != nil {
 		rows.Close()
-		return snapshot, fmt.Errorf("iterate feedback for import: %w", err)
 	}
-	rows.Close()
 
 	// Every scheduled post is still actionable at the cutover boundary. This
 	// includes ordinary posts and AI materials as well as event publications.
-	rows, err = source.QueryContext(ctx, `SELECT id,creator_id,text,entities_json,COALESCE(rich_message_json,''),COALESCE(source,'admin'),scheduled_at,created_at FROM posts WHERE status='scheduled' ORDER BY id`)
+	rows, err = source.QueryContext(ctx, `SELECT id,creator_id,text,entities_json,COALESCE(rich_message_json,''),COALESCE(source,'admin'),COALESCE(source_key,''),scheduled_at,created_at FROM posts WHERE status='scheduled' ORDER BY id`)
 	if err != nil {
 		return snapshot, fmt.Errorf("read scheduled publications for import: %w", err)
 	}
 	for rows.Next() {
 		var p legacyScheduledPublication
-		if err := rows.Scan(&p.id, &p.creatorID, &p.text, &p.entities, &p.richMessage, &p.source, &p.scheduledAt, &p.createdAt); err != nil {
+		if err := rows.Scan(&p.id, &p.creatorID, &p.text, &p.entities, &p.richMessage, &p.source, &p.sourceKey, &p.scheduledAt, &p.createdAt); err != nil {
 			rows.Close()
 			return snapshot, err
 		}
@@ -273,6 +318,32 @@ func loadSnapshot(ctx context.Context, source *sql.DB) (legacySnapshot, error) {
 		}
 		deliveryRows.Close()
 	}
+
+	row := source.QueryRowContext(ctx, `SELECT jlpt_level,admin_comment,updated_by,updated_at FROM ai_topic_settings WHERE id=1`)
+	var settings legacyAISettings
+	if err := row.Scan(&settings.jlptLevel, &settings.adminComment, &settings.updatedBy, &settings.updatedAt); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return snapshot, fmt.Errorf("read AI topic settings for import: %w", err)
+	} else if err == nil {
+		snapshot.aiSettings = &settings
+	}
+
+	rows, err = source.QueryContext(ctx, `SELECT id,scheduled_for,status,attempts,next_attempt_at,prompt_version,topic_json,post_id,last_error,created_at,updated_at FROM ai_topic_jobs ORDER BY id`)
+	if err != nil {
+		return snapshot, fmt.Errorf("read AI topic jobs for import: %w", err)
+	}
+	for rows.Next() {
+		var job legacyAIJob
+		if err := rows.Scan(&job.id, &job.scheduledFor, &job.status, &job.attempts, &job.nextAttemptAt, &job.promptVersion, &job.topic, &job.postID, &job.lastError, &job.createdAt, &job.updatedAt); err != nil {
+			rows.Close()
+			return snapshot, fmt.Errorf("scan AI topic job for import: %w", err)
+		}
+		snapshot.aiJobs = append(snapshot.aiJobs, job)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return snapshot, fmt.Errorf("iterate AI topic jobs for import: %w", err)
+	}
+	rows.Close()
 	return snapshot, nil
 }
 
@@ -286,7 +357,7 @@ func importScheduledPublications(ctx context.Context, tx pgx.Tx, snapshot legacy
 		if err != nil {
 			created = time.Now().UTC()
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO publications(id,creator_telegram_id,text,entities,rich_message,status,scheduled_at,source,created_at) VALUES($1,$2,$3,$4::jsonb,NULLIF($5,'')::jsonb,'scheduled',$6,$7,$8) ON CONFLICT(id) DO UPDATE SET creator_telegram_id=EXCLUDED.creator_telegram_id,text=EXCLUDED.text,entities=EXCLUDED.entities,rich_message=EXCLUDED.rich_message,status='scheduled',scheduled_at=EXCLUDED.scheduled_at,source=EXCLUDED.source`, p.id, p.creatorID, p.text, p.entities, p.richMessage, at, p.source, created)
+		_, err = tx.Exec(ctx, `INSERT INTO publications(id,creator_telegram_id,text,entities,rich_message,status,scheduled_at,source,source_key,created_at) VALUES($1,$2,$3,$4::jsonb,NULLIF($5,'')::jsonb,'scheduled',$6,$7,NULLIF($8,''),$9) ON CONFLICT(id) DO UPDATE SET creator_telegram_id=EXCLUDED.creator_telegram_id,text=EXCLUDED.text,entities=EXCLUDED.entities,rich_message=EXCLUDED.rich_message,status='scheduled',scheduled_at=EXCLUDED.scheduled_at,source=EXCLUDED.source,source_key=EXCLUDED.source_key`, p.id, p.creatorID, p.text, p.entities, p.richMessage, at, p.source, p.sourceKey, created)
 		if err != nil {
 			return err
 		}
@@ -312,6 +383,51 @@ func importScheduledPublications(ctx context.Context, tx pgx.Tx, snapshot legacy
 		}
 	}
 	_, err := tx.Exec(ctx, `SELECT setval(pg_get_serial_sequence('publications','id'), GREATEST((SELECT COALESCE(MAX(id),1) FROM publications),1), true)`)
+	return err
+}
+
+func importAIState(ctx context.Context, tx pgx.Tx, snapshot legacySnapshot) error {
+	if snapshot.aiSettings != nil {
+		updatedAt, err := parseLegacyTime(snapshot.aiSettings.updatedAt)
+		if err != nil {
+			return fmt.Errorf("AI topic settings have invalid update time: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE ai_topic_settings SET jlpt_level=$1,admin_comment=$2,updated_by=$3,updated_at=$4 WHERE id=1`, snapshot.aiSettings.jlptLevel, nullableString(snapshot.aiSettings.adminComment), nullableInt64(snapshot.aiSettings.updatedBy), updatedAt); err != nil {
+			return err
+		}
+	}
+	for _, job := range snapshot.aiJobs {
+		scheduledFor, err := parseLegacyTime(job.scheduledFor)
+		if err != nil {
+			return fmt.Errorf("AI topic job %d has invalid schedule: %w", job.id, err)
+		}
+		nextAttemptAt, err := parseLegacyTime(job.nextAttemptAt)
+		if err != nil {
+			return fmt.Errorf("AI topic job %d has invalid next attempt: %w", job.id, err)
+		}
+		createdAt, err := parseLegacyTime(job.createdAt)
+		if err != nil {
+			return fmt.Errorf("AI topic job %d has invalid creation time: %w", job.id, err)
+		}
+		updatedAt, err := parseLegacyTime(job.updatedAt)
+		if err != nil {
+			return fmt.Errorf("AI topic job %d has invalid update time: %w", job.id, err)
+		}
+		var publicationID any
+		if job.postID.Valid {
+			var exists bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM publications WHERE id=$1)`, job.postID.Int64).Scan(&exists); err != nil {
+				return err
+			}
+			if exists {
+				publicationID = job.postID.Int64
+			}
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO ai_topic_jobs(id,scheduled_for,status,attempts,next_attempt_at,prompt_version,topic,publication_id,last_error,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,NULLIF($7,'')::jsonb,$8,$9,$10,$11) ON CONFLICT(scheduled_for) DO UPDATE SET status=EXCLUDED.status,attempts=EXCLUDED.attempts,next_attempt_at=EXCLUDED.next_attempt_at,prompt_version=EXCLUDED.prompt_version,topic=EXCLUDED.topic,publication_id=EXCLUDED.publication_id,last_error=EXCLUDED.last_error,created_at=EXCLUDED.created_at,updated_at=EXCLUDED.updated_at`, job.id, scheduledFor, job.status, job.attempts, nextAttemptAt, nullableString(job.promptVersion), nullableString(job.topic), publicationID, nullableString(job.lastError), createdAt, updatedAt); err != nil {
+			return err
+		}
+	}
+	_, err := tx.Exec(ctx, `SELECT setval(pg_get_serial_sequence('ai_topic_jobs','id'), GREATEST((SELECT COALESCE(MAX(id),1) FROM ai_topic_jobs),1), true)`)
 	return err
 }
 
@@ -512,4 +628,18 @@ func nullableInt(value sql.NullInt64) *int {
 	}
 	result := int(value.Int64)
 	return &result
+}
+
+func nullableInt64(value sql.NullInt64) any {
+	if !value.Valid {
+		return nil
+	}
+	return value.Int64
+}
+
+func nullableString(value sql.NullString) any {
+	if !value.Valid || strings.TrimSpace(value.String) == "" {
+		return nil
+	}
+	return value.String
 }

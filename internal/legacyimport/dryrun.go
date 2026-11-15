@@ -17,7 +17,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const expectedSQLiteSchemaVersion = 6
+const minimumSQLiteSchemaVersion = 5
 
 var requiredTables = []string{
 	"schema_migrations",
@@ -27,7 +27,8 @@ var requiredTables = []string{
 	"user_profiles",
 	"events",
 	"registrations",
-	"feedback_entries",
+	"ai_topic_settings",
+	"ai_topic_jobs",
 }
 
 // Counts contains source totals and the equivalent projected PostgreSQL totals.
@@ -106,8 +107,11 @@ func DryRun(ctx context.Context, sourceSQLitePath string) (Report, error) {
 		return report, err
 	}
 	report.SourceVersion = version
-	if version < expectedSQLiteSchemaVersion {
-		addIssue(&report, "schema_migrations", "", "version", "unsupported_schema", "legacy SQLite schema must be migrated to version 6 before import")
+	if version < minimumSQLiteSchemaVersion {
+		addIssue(&report, "schema_migrations", "", "version", "unsupported_schema", "legacy SQLite schema must be migrated to at least version 5 before import")
+	}
+	if version >= 6 && !tables["feedback_entries"] {
+		addIssue(&report, "feedback_entries", "", "", "missing_table", "version 6 legacy schema must contain feedback_entries")
 	}
 
 	validator := validator{
@@ -116,7 +120,7 @@ func DryRun(ctx context.Context, sourceSQLitePath string) (Report, error) {
 		events:        make(map[int64]struct{}),
 		registrations: make(map[string]struct{}),
 	}
-	if err := validator.validateProfiles(ctx, database); err != nil {
+	if err := validator.validateProfiles(ctx, database, version >= 6); err != nil {
 		return report, err
 	}
 	if err := validator.validateEvents(ctx, database); err != nil {
@@ -125,8 +129,10 @@ func DryRun(ctx context.Context, sourceSQLitePath string) (Report, error) {
 	if err := validator.validateRegistrations(ctx, database); err != nil {
 		return report, err
 	}
-	if err := validator.validateFeedback(ctx, database); err != nil {
-		return report, err
+	if tables["feedback_entries"] {
+		if err := validator.validateFeedback(ctx, database); err != nil {
+			return report, err
+		}
 	}
 
 	report.Counts.ProjectedPeople = int64(len(validator.people))
@@ -191,13 +197,17 @@ func sourceSchemaVersion(ctx context.Context, database *sql.DB) (int64, error) {
 	return version.Int64, nil
 }
 
-func (v *validator) validateProfiles(ctx context.Context, database *sql.DB) error {
-	rows, err := database.QueryContext(ctx, `
+func (v *validator) validateProfiles(ctx context.Context, database *sql.DB, hasFeedbackSettings bool) error {
+	feedbackColumn := "1 AS feedback_enabled"
+	if hasFeedbackSettings {
+		feedbackColumn = "feedback_enabled"
+	}
+	rows, err := database.QueryContext(ctx, fmt.Sprintf(`
 		SELECT user_id, full_name, telegram_username, telegram_first_name,
 			telegram_last_name, is_russian_citizen, is_itmo_student,
-			feedback_enabled, created_at, updated_at
+			%s, created_at, updated_at
 		FROM user_profiles
-		ORDER BY user_id`)
+		ORDER BY user_id`, feedbackColumn))
 	if err != nil {
 		return fmt.Errorf("read legacy profiles: %w", err)
 	}

@@ -2,6 +2,8 @@ package config
 
 import "testing"
 
+import "os"
+
 func TestLoadUsesDefaults(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://user:password@localhost:5432/hikari?sslmode=disable")
 	t.Setenv("APP_ENV", "")
@@ -86,6 +88,31 @@ func TestLoadAcceptsLegacyAdminIDsAlias(t *testing.T) {
 	}
 	if _, ok := cfg.AdminTelegramIDs[789]; !ok {
 		t.Error("AdminTelegramIDs does not contain legacy ADMIN_IDS value")
+	}
+}
+
+func TestLoadConfiguresAIFromTargetFile(t *testing.T) {
+	setRequiredEnvironment(t)
+	file, err := os.CreateTemp(t.TempDir(), "targets-*.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = file.WriteString(`{"telegram":[{"key":"club","name":"Club","chat_id":-100123,"message_thread_id":7}]}`); err != nil {
+		t.Fatal(err)
+	}
+	if err = file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DEEPSEEK_API_KEY", "secret")
+	t.Setenv("AI_TOPIC_TARGET_KEY", "club")
+	t.Setenv("AI_TOPIC_AUTO_PUBLISH_TIME", "12:30")
+	t.Setenv("TARGETS_PATH", file.Name())
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.AI.Enabled || cfg.AI.Target.Destination != "-100123" || cfg.AI.Target.MessageThreadID == nil || *cfg.AI.Target.MessageThreadID != 7 {
+		t.Fatalf("unexpected AI config: %+v", cfg.AI)
 	}
 }
 

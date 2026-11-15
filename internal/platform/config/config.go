@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -18,6 +19,21 @@ type Config struct {
 	TelegramInitDataMaxAge time.Duration
 	AdminTelegramIDs       map[int64]struct{}
 	BotServiceToken        string
+	AI                     AIConfig
+}
+
+type Target struct {
+	Key             string
+	Name            string
+	Destination     string
+	MessageThreadID *int64
+}
+type AIConfig struct {
+	Enabled                                                   bool
+	APIKey, Model, BaseURL, PublishTime, Timezone             string
+	Timeout                                                   time.Duration
+	QuestionCount, VocabularyCount, GrammarCount, MaxAttempts int
+	Target                                                    Target
 }
 
 func Load() (Config, error) {
@@ -63,6 +79,11 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("BOT_SERVICE_TOKEN is required")
 	}
 
+	ai, err := loadAIConfig()
+	if err != nil {
+		return Config{}, err
+	}
+
 	return Config{
 		Environment:            valueOrDefault("APP_ENV", "development"),
 		HTTPAddress:            valueOrDefault("HTTP_ADDRESS", ":8080"),
@@ -72,7 +93,84 @@ func Load() (Config, error) {
 		TelegramInitDataMaxAge: initDataMaxAge,
 		AdminTelegramIDs:       adminTelegramIDs,
 		BotServiceToken:        botServiceToken,
+		AI:                     ai,
 	}, nil
+}
+
+func loadAIConfig() (AIConfig, error) {
+	key := strings.TrimSpace(os.Getenv("DEEPSEEK_API_KEY"))
+	targetKey := strings.TrimSpace(os.Getenv("AI_TOPIC_TARGET_KEY"))
+	publish := strings.TrimSpace(os.Getenv("AI_TOPIC_AUTO_PUBLISH_TIME"))
+	if key == "" {
+		return AIConfig{}, nil
+	}
+	if targetKey == "" {
+		return AIConfig{}, fmt.Errorf("AI_TOPIC_TARGET_KEY is required when DeepSeek is enabled")
+	}
+	if publish != "" {
+		if _, err := time.Parse("15:04", publish); err != nil {
+			return AIConfig{}, fmt.Errorf("AI_TOPIC_AUTO_PUBLISH_TIME must use HH:MM")
+		}
+	}
+	timeoutSeconds, err := strconv.Atoi(valueOrDefault("DEEPSEEK_TIMEOUT_SECONDS", "90"))
+	if err != nil || timeoutSeconds <= 0 {
+		return AIConfig{}, fmt.Errorf("DEEPSEEK_TIMEOUT_SECONDS must be positive")
+	}
+	timeout := time.Duration(timeoutSeconds) * time.Second
+	bounded := func(name string, fallback, maximum int) (int, error) {
+		value, err := strconv.Atoi(valueOrDefault(name, strconv.Itoa(fallback)))
+		if err != nil || value < 1 || value > maximum {
+			return 0, fmt.Errorf("%s must be between 1 and %d", name, maximum)
+		}
+		return value, nil
+	}
+	questions, err := bounded("AI_TOPIC_QUESTION_COUNT", 5, 8)
+	if err != nil {
+		return AIConfig{}, err
+	}
+	vocabulary, err := bounded("AI_TOPIC_VOCABULARY_COUNT", 10, 20)
+	if err != nil {
+		return AIConfig{}, err
+	}
+	grammar, err := bounded("AI_TOPIC_GRAMMAR_COUNT", 3, 8)
+	if err != nil {
+		return AIConfig{}, err
+	}
+	attempts, err := bounded("AI_TOPIC_MAX_ATTEMPTS", 5, 20)
+	if err != nil {
+		return AIConfig{}, err
+	}
+	raw, err := os.ReadFile(valueOrDefault("TARGETS_PATH", "/app/targets.json"))
+	if err != nil {
+		return AIConfig{}, fmt.Errorf("read targets: %w", err)
+	}
+	var file struct {
+		Telegram []struct {
+			Key, Name       string
+			ChatID          json.RawMessage `json:"chat_id"`
+			MessageThreadID *int64          `json:"message_thread_id"`
+		} `json:"telegram"`
+	}
+	if err = json.Unmarshal(raw, &file); err != nil {
+		return AIConfig{}, fmt.Errorf("parse targets: %w", err)
+	}
+	var target Target
+	for _, item := range file.Telegram {
+		if item.Key == targetKey {
+			var destination string
+			if len(item.ChatID) > 0 && item.ChatID[0] == '"' {
+				_ = json.Unmarshal(item.ChatID, &destination)
+			} else {
+				destination = string(item.ChatID)
+			}
+			target = Target{item.Key, item.Name, destination, item.MessageThreadID}
+			break
+		}
+	}
+	if target.Key == "" || target.Destination == "" {
+		return AIConfig{}, fmt.Errorf("AI topic target %q not found", targetKey)
+	}
+	return AIConfig{true, key, valueOrDefault("DEEPSEEK_MODEL", "deepseek-flash"), valueOrDefault("DEEPSEEK_BASE_URL", "https://api.deepseek.com"), publish, valueOrDefault("TIMEZONE", "Europe/Moscow"), timeout, questions, vocabulary, grammar, attempts, target}, nil
 }
 
 func parseTelegramIDs(raw string) (map[int64]struct{}, error) {

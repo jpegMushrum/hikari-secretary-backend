@@ -139,6 +139,18 @@ func (r *Repository) RecoverInterruptedDeliveries(ctx context.Context) error {
 	return err
 }
 
+func (r *Repository) ReplaceScheduled(ctx context.Context, id int64, text string, rich map[string]any) (bool, error) {
+	raw, err := json.Marshal(rich)
+	if err != nil {
+		return false, err
+	}
+	tag, err := r.pool.Exec(ctx, `UPDATE publications SET text=$2,rich_message=$3::jsonb WHERE id=$1 AND status='scheduled' AND source='ai_daily_topic'`, id, text, string(raw))
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 func (r *Repository) ToggleTarget(ctx context.Context, publicationID int64, target domain.Target) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {

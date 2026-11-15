@@ -9,14 +9,17 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+	_ "time/tzdata"
 
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/adapters/botapi"
 	interactionspostgres "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/interactions/adapters/postgres"
 	interactionsapp "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/interactions/application"
+	learningcontent "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent"
 	peoplepostgres "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/people/adapters/postgres"
 	peopleapp "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/people/application"
 	publishingpostgres "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/adapters/postgres"
 	publishingapp "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/application"
+	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/domain"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/config"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/database"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/httpapi"
@@ -45,6 +48,27 @@ func main() {
 	peopleService := peopleapp.NewService(peoplepostgres.NewRepository(pool))
 	interactionService := interactionsapp.NewService(interactionspostgres.NewRepository(pool))
 	publishingService := publishingapp.NewService(publishingpostgres.NewRepository(pool))
+	var aiService *learningcontent.Service
+	if cfg.AI.Enabled {
+		provider := learningcontent.NewDeepSeekProvider(cfg.AI.APIKey, cfg.AI.Model, cfg.AI.BaseURL, cfg.AI.Timeout, cfg.AI.QuestionCount, cfg.AI.VocabularyCount, cfg.AI.GrammarCount)
+		repository := learningcontent.NewPostgresRepository(pool)
+		aiService = learningcontent.NewService(provider, repository, publishingService, domain.Target{Key: cfg.AI.Target.Key, Name: cfg.AI.Target.Name, Destination: cfg.AI.Target.Destination, MessageThreadID: cfg.AI.Target.MessageThreadID}, cfg.AI.QuestionCount, cfg.AI.VocabularyCount, cfg.AI.GrammarCount)
+		if cfg.AI.PublishTime != "" {
+			location, loadErr := time.LoadLocation(cfg.AI.Timezone)
+			if loadErr != nil {
+				logger.Error("invalid AI timezone", "error", loadErr)
+				os.Exit(1)
+			}
+			creator := int64(0)
+			for id := range cfg.AdminTelegramIDs {
+				if creator == 0 || id < creator {
+					creator = id
+				}
+			}
+			go learningcontent.NewWorker(repository, aiService, location, cfg.AI.PublishTime, creator, cfg.AI.MaxAttempts, logger).Run(ctx)
+		}
+		logger.Info("AI learning content enabled", "target", cfg.AI.Target.Key, "automatic", cfg.AI.PublishTime != "")
+	}
 	if err := publishingService.RecoverInterruptedDeliveries(ctx); err != nil {
 		logger.Error("recover interrupted publication deliveries", "error", err)
 		os.Exit(1)
@@ -58,13 +82,15 @@ func main() {
 			cfg.AdminTelegramIDs,
 			serviceauth.NewValidator(cfg.BotServiceToken),
 			peopleService,
-			botapi.NewRouter(pool, interactionService, publishingService),
+			botapi.NewRouter(pool, interactionService, publishingService, aiService),
 		),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      15 * time.Second,
-		IdleTimeout:       60 * time.Second,
-		MaxHeaderBytes:    1 << 20,
+		// Manual AI generation can legitimately take up to the configured
+		// provider timeout. Keep the HTTP connection alive for that operation.
+		WriteTimeout:   120 * time.Second,
+		IdleTimeout:    60 * time.Second,
+		MaxHeaderBytes: 1 << 20,
 	}
 
 	errorsCh := make(chan error, 1)

@@ -48,6 +48,9 @@ func (r *fakeRepository) Failed(context.Context, int64, string, int) error     {
 func (r *fakeRepository) Notices(context.Context) ([]domain.Notice, error)     { return nil, nil }
 func (r *fakeRepository) MarkNotified(context.Context, int64) error            { return nil }
 func (r *fakeRepository) RecoverInterruptedDeliveries(context.Context) error   { return nil }
+func (r *fakeRepository) ReplaceScheduled(context.Context, int64, string, map[string]any) (bool, error) {
+	return true, nil
+}
 
 func TestCreateDraftRejectsInvalidInputBeforeRepository(t *testing.T) {
 	repo := &fakeRepository{}

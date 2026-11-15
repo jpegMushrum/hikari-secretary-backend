@@ -22,6 +22,7 @@ type Repository interface {
 	Notices(context.Context) ([]domain.Notice, error)
 	MarkNotified(context.Context, int64) error
 	RecoverInterruptedDeliveries(context.Context) error
+	ReplaceScheduled(context.Context, int64, string, map[string]any) (bool, error)
 }
 
 func (s *Service) Publication(ctx context.Context, id int64) (map[string]any, bool, error) {
@@ -83,6 +84,13 @@ func (s *Service) CreateScheduled(ctx context.Context, scheduled domain.Schedule
 
 func (s *Service) RecoverInterruptedDeliveries(ctx context.Context) error {
 	return s.repository.RecoverInterruptedDeliveries(ctx)
+}
+
+func (s *Service) ReplaceScheduled(ctx context.Context, id int64, text string, rich map[string]any) (bool, error) {
+	if id <= 0 {
+		return false, fmt.Errorf("publication id is required")
+	}
+	return s.repository.ReplaceScheduled(ctx, id, text, rich)
 }
 
 func validateDraft(draft *domain.Draft) error {

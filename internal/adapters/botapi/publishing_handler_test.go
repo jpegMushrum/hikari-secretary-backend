@@ -57,6 +57,9 @@ func (r *publishingRepositoryStub) RecoverInterruptedDeliveries(context.Context)
 	r.recoveryCalls++
 	return nil
 }
+func (r *publishingRepositoryStub) ReplaceScheduled(context.Context, int64, string, map[string]any) (bool, error) {
+	return true, nil
+}
 
 func publishingTestRouter(repository *publishingRepositoryStub) http.Handler {
 	return NewRouter(nil, nil, publishing.NewService(repository))

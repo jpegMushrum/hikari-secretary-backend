@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	interactions "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/interactions/application"
+	learningcontent "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent"
 	publishing "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/application"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/domain"
 )
@@ -32,10 +33,15 @@ type Handler struct {
 	pool         *pgxpool.Pool
 	flows        *interactions.Service
 	publications *publishing.Service
+	ai           *learningcontent.Service
 }
 
-func NewRouter(pool *pgxpool.Pool, flows *interactions.Service, publications *publishing.Service) http.Handler {
-	h := &Handler{pool: pool, flows: flows, publications: publications}
+func NewRouter(pool *pgxpool.Pool, flows *interactions.Service, publications *publishing.Service, aiServices ...*learningcontent.Service) http.Handler {
+	var ai *learningcontent.Service
+	if len(aiServices) > 0 {
+		ai = aiServices[0]
+	}
+	h := &Handler{pool: pool, flows: flows, publications: publications, ai: ai}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /people/profile", h.upsertProfile)
 	mux.HandleFunc("GET /people/{telegram_id}", h.getProfile)
@@ -82,13 +88,110 @@ func NewRouter(pool *pgxpool.Pool, flows *interactions.Service, publications *pu
 	mux.HandleFunc("POST /publication-notifications/{id}/sent", h.markPublicationNotified)
 	mux.HandleFunc("GET /ai-topics/preferences", h.aiPreferences)
 	mux.HandleFunc("PUT /ai-topics/preferences", h.saveAIPreferences)
-	mux.HandleFunc("POST /ai-topics/jobs", h.enqueueAIJob)
-	mux.HandleFunc("POST /ai-topics/jobs/claim", h.claimAIJob)
-	mux.HandleFunc("GET /ai-topics/history", h.aiHistory)
-	mux.HandleFunc("POST /ai-topics/jobs/{id}/scheduled", h.aiJobScheduled)
-	mux.HandleFunc("POST /ai-topics/jobs/{id}/failed", h.aiJobFailed)
-	mux.HandleFunc("POST /ai-topics/history/{publication_id}", h.replaceAITopic)
+	mux.HandleFunc("GET /ai-topics/capabilities", h.aiCapabilities)
+	mux.HandleFunc("POST /ai-topics/generate", h.generateAITopic)
+	mux.HandleFunc("POST /ai-topics/publications", h.publishAITopic)
+	mux.HandleFunc("PUT /ai-topics/publications/{publication_id}", h.updateAITopicPublication)
+	mux.HandleFunc("GET /ai-topics/failure-notifications", h.aiFailureNotices)
+	mux.HandleFunc("POST /ai-topics/failure-notifications/{id}/sent", h.markAIFailureNotified)
 	return http.StripPrefix("/internal/bot/v1", mux)
+}
+
+func (h *Handler) aiFailureNotices(w http.ResponseWriter, r *http.Request) {
+	items, err := learningcontent.NewPostgresRepository(h.pool).FailureNotices(r.Context())
+	if err != nil {
+		writeError(w, 500, "internal_error")
+		return
+	}
+	writeJSON(w, 200, items)
+}
+func (h *Handler) markAIFailureNotified(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathInt64(r, "id")
+	if !ok {
+		writeError(w, 400, "invalid_request")
+		return
+	}
+	if err := learningcontent.NewPostgresRepository(h.pool).MarkFailureNotified(r.Context(), id); err != nil {
+		writeError(w, 500, "internal_error")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
+func (h *Handler) aiCapabilities(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, 200, map[string]any{"enabled": h.ai != nil})
+}
+func (h *Handler) generateAITopic(w http.ResponseWriter, r *http.Request) {
+	if h.ai == nil {
+		writeError(w, http.StatusServiceUnavailable, "ai_not_configured")
+		return
+	}
+	var body struct {
+		Options              *learningcontent.Options `json:"options"`
+		ExcludePublicationID *int64                   `json:"exclude_publication_id"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	topic, err := h.ai.Generate(r.Context(), body.Options, body.ExcludePublicationID)
+	if err != nil {
+		log.Printf("AI generation failed: %v", err)
+		writeError(w, http.StatusBadGateway, "ai_generation_failed")
+		return
+	}
+	writeJSON(w, 200, topic)
+}
+func (h *Handler) publishAITopic(w http.ResponseWriter, r *http.Request) {
+	if h.ai == nil {
+		writeError(w, http.StatusServiceUnavailable, "ai_not_configured")
+		return
+	}
+	var body struct {
+		Topic       learningcontent.Topic `json:"topic"`
+		CreatorID   int64                 `json:"creator_id"`
+		ScheduledAt string                `json:"scheduled_at"`
+		SourceKey   string                `json:"source_key"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	scheduled, err := time.Parse(time.RFC3339, body.ScheduledAt)
+	if err != nil || body.CreatorID <= 0 {
+		writeError(w, 400, "invalid_request")
+		return
+	}
+	id, err := h.ai.Schedule(r.Context(), body.Topic, body.CreatorID, scheduled, body.SourceKey, true)
+	if errors.Is(err, domain.ErrPendingPublicationLimit) {
+		writeError(w, 409, "capacity_limit")
+		return
+	}
+	if err != nil {
+		log.Printf("AI publication failed: %v", err)
+		writeError(w, 500, "internal_error")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"id": id})
+}
+func (h *Handler) updateAITopicPublication(w http.ResponseWriter, r *http.Request) {
+	if h.ai == nil {
+		writeError(w, http.StatusServiceUnavailable, "ai_not_configured")
+		return
+	}
+	id, ok := pathInt64(r, "publication_id")
+	var body struct {
+		Topic learningcontent.Topic `json:"topic"`
+	}
+	if !ok || !decodeJSON(w, r, &body) {
+		writeError(w, 400, "invalid_request")
+		return
+	}
+	replaced, err := h.ai.Replace(r.Context(), id, body.Topic)
+	if err != nil {
+		log.Printf("AI publication replacement failed: %v", err)
+		writeError(w, 500, "internal_error")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"replaced": replaced})
 }
 
 type profileRequest struct {
@@ -547,149 +650,6 @@ func (h *Handler) saveAIPreferences(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
-func (h *Handler) enqueueAIJob(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		ScheduledFor  string `json:"scheduled_for"`
-		AvailableAt   string `json:"available_at"`
-		PromptVersion string `json:"prompt_version"`
-	}
-	if !decodeJSON(w, r, &body) {
-		return
-	}
-	scheduled, err := time.Parse(time.RFC3339, body.ScheduledFor)
-	if err != nil {
-		writeError(w, 400, "invalid_request")
-		return
-	}
-	available := scheduled
-	if body.AvailableAt != "" {
-		available, err = time.Parse(time.RFC3339, body.AvailableAt)
-		if err != nil {
-			writeError(w, 400, "invalid_request")
-			return
-		}
-	}
-	var id int64
-	err = h.pool.QueryRow(r.Context(), `INSERT INTO ai_topic_jobs(scheduled_for,status,next_attempt_at,prompt_version) VALUES($1,'pending',$2,$3) ON CONFLICT(scheduled_for) DO UPDATE SET status=CASE WHEN ai_topic_jobs.status='failed' AND ai_topic_jobs.prompt_version IS DISTINCT FROM EXCLUDED.prompt_version THEN 'pending' ELSE ai_topic_jobs.status END,attempts=CASE WHEN ai_topic_jobs.status='failed' AND ai_topic_jobs.prompt_version IS DISTINCT FROM EXCLUDED.prompt_version THEN 0 ELSE ai_topic_jobs.attempts END,next_attempt_at=CASE WHEN ai_topic_jobs.status='failed' AND ai_topic_jobs.prompt_version IS DISTINCT FROM EXCLUDED.prompt_version THEN EXCLUDED.next_attempt_at ELSE ai_topic_jobs.next_attempt_at END,prompt_version=EXCLUDED.prompt_version,last_error=CASE WHEN ai_topic_jobs.status='failed' AND ai_topic_jobs.prompt_version IS DISTINCT FROM EXCLUDED.prompt_version THEN NULL ELSE ai_topic_jobs.last_error END,updated_at=NOW() RETURNING id`, scheduled, available, body.PromptVersion).Scan(&id)
-	if err != nil {
-		writeError(w, 500, "internal_error")
-		return
-	}
-	writeJSON(w, 200, map[string]any{"id": id})
-}
-func (h *Handler) claimAIJob(w http.ResponseWriter, r *http.Request) {
-	tx, err := h.pool.Begin(r.Context())
-	if err != nil {
-		writeError(w, 500, "internal_error")
-		return
-	}
-	defer tx.Rollback(r.Context())
-	var id int64
-	var scheduled time.Time
-	var attempts int
-	var version *string
-	err = tx.QueryRow(r.Context(), `SELECT id,scheduled_for,attempts,prompt_version FROM ai_topic_jobs WHERE status IN ('pending','retry') AND next_attempt_at<=NOW() ORDER BY next_attempt_at,id FOR UPDATE SKIP LOCKED LIMIT 1`).Scan(&id, &scheduled, &attempts, &version)
-	if errors.Is(err, pgx.ErrNoRows) {
-		_ = tx.Commit(r.Context())
-		w.WriteHeader(204)
-		return
-	}
-	if err != nil {
-		writeError(w, 500, "internal_error")
-		return
-	}
-	_, err = tx.Exec(r.Context(), `UPDATE ai_topic_jobs SET status='generating',attempts=attempts+1,updated_at=NOW() WHERE id=$1`, id)
-	if err != nil || tx.Commit(r.Context()) != nil {
-		writeError(w, 500, "internal_error")
-		return
-	}
-	writeJSON(w, 200, map[string]any{"id": id, "scheduled_for": scheduled, "attempts": attempts + 1, "prompt_version": version})
-}
-func (h *Handler) aiHistory(w http.ResponseWriter, r *http.Request) {
-	rows, err := h.pool.Query(r.Context(), `SELECT topic FROM ai_topic_jobs WHERE status='scheduled' AND topic IS NOT NULL ORDER BY scheduled_for DESC`)
-	if err != nil {
-		writeError(w, 500, "internal_error")
-		return
-	}
-	defer rows.Close()
-	items := []any{}
-	for rows.Next() {
-		var topic []byte
-		if err = rows.Scan(&topic); err != nil {
-			writeError(w, 500, "internal_error")
-			return
-		}
-		var value any
-		if json.Unmarshal(topic, &value) == nil {
-			items = append(items, value)
-		}
-	}
-	writeJSON(w, 200, items)
-}
-func (h *Handler) aiJobScheduled(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathInt64(r, "id")
-	var body struct {
-		PublicationID int64 `json:"publication_id"`
-		Topic         any   `json:"topic"`
-	}
-	if !ok || !decodeJSON(w, r, &body) || body.PublicationID <= 0 {
-		writeError(w, 400, "invalid_request")
-		return
-	}
-	raw, _ := json.Marshal(body.Topic)
-	command, err := h.pool.Exec(r.Context(), `UPDATE ai_topic_jobs SET status='scheduled',publication_id=$2,topic=$3::jsonb,last_error=NULL,updated_at=NOW() WHERE id=$1 AND status='generating'`, id, body.PublicationID, string(raw))
-	if err != nil || command.RowsAffected() != 1 {
-		writeError(w, 409, "invalid_state")
-		return
-	}
-	writeJSON(w, 200, map[string]any{"ok": true})
-}
-func (h *Handler) aiJobFailed(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathInt64(r, "id")
-	var body struct {
-		Error   string  `json:"error"`
-		RetryAt *string `json:"retry_at"`
-	}
-	if !ok || !decodeJSON(w, r, &body) {
-		writeError(w, 400, "invalid_request")
-		return
-	}
-	status := "failed"
-	var at any = time.Now().UTC()
-	if body.RetryAt != nil {
-		parsed, err := time.Parse(time.RFC3339, *body.RetryAt)
-		if err != nil {
-			writeError(w, 400, "invalid_request")
-			return
-		}
-		status = "retry"
-		at = parsed
-	}
-	command, err := h.pool.Exec(r.Context(), `UPDATE ai_topic_jobs SET status=$2,next_attempt_at=$3,last_error=$4,updated_at=NOW() WHERE id=$1 AND status='generating'`, id, status, at, body.Error)
-	if err != nil || command.RowsAffected() != 1 {
-		writeError(w, 409, "invalid_state")
-		return
-	}
-	writeJSON(w, 200, map[string]any{"ok": true})
-}
-func (h *Handler) replaceAITopic(w http.ResponseWriter, r *http.Request) {
-	post, ok := pathInt64(r, "publication_id")
-	var body struct {
-		Topic any `json:"topic"`
-	}
-	if !ok || !decodeJSON(w, r, &body) {
-		writeError(w, 400, "invalid_request")
-		return
-	}
-	raw, _ := json.Marshal(body.Topic)
-	command, err := h.pool.Exec(r.Context(), `UPDATE ai_topic_jobs SET topic=$2::jsonb,updated_at=NOW() WHERE publication_id=$1 AND status='scheduled'`, post, string(raw))
-	if err != nil {
-		writeError(w, 500, "internal_error")
-		return
-	}
-	writeJSON(w, 200, map[string]any{"replaced": command.RowsAffected() == 1})
-}
-
 func (h *Handler) toggleFeedback(writer http.ResponseWriter, request *http.Request) {
 	telegramID, ok := pathInt64(request, "telegram_id")
 	if !ok {

@@ -86,6 +86,9 @@ func NewRouter(pool *pgxpool.Pool, flows *interactions.Service, publications *pu
 	mux.HandleFunc("POST /deliveries/{id}/failed", h.deliveryFailed)
 	mux.HandleFunc("GET /publication-notifications", h.publicationNotices)
 	mux.HandleFunc("POST /publication-notifications/{id}/sent", h.markPublicationNotified)
+	mux.HandleFunc("POST /outbox/notifications/claim", h.claimOutboxNotification)
+	mux.HandleFunc("POST /outbox/notifications/{id}/succeeded", h.outboxNotificationSucceeded)
+	mux.HandleFunc("POST /outbox/notifications/{id}/failed", h.outboxNotificationFailed)
 	mux.HandleFunc("GET /ai-topics/preferences", h.aiPreferences)
 	mux.HandleFunc("PUT /ai-topics/preferences", h.saveAIPreferences)
 	mux.HandleFunc("GET /ai-topics/capabilities", h.aiCapabilities)
@@ -95,6 +98,84 @@ func NewRouter(pool *pgxpool.Pool, flows *interactions.Service, publications *pu
 	mux.HandleFunc("GET /ai-topics/failure-notifications", h.aiFailureNotices)
 	mux.HandleFunc("POST /ai-topics/failure-notifications/{id}/sent", h.markAIFailureNotified)
 	return http.StripPrefix("/internal/bot/v1", mux)
+}
+
+func (h *Handler) claimOutboxNotification(w http.ResponseWriter, r *http.Request) {
+	tx, err := h.pool.Begin(r.Context())
+	if err != nil {
+		writeError(w, 500, "internal_error")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	var id int64
+	var topic string
+	var raw []byte
+	var attempts int
+	err = tx.QueryRow(r.Context(), `SELECT id,topic,payload,attempts FROM outbox WHERE topic='event.cancelled' AND status IN ('pending','failed') AND available_at<=NOW() ORDER BY available_at,id FOR UPDATE SKIP LOCKED LIMIT 1`).Scan(&id, &topic, &raw, &attempts)
+	if errors.Is(err, pgx.ErrNoRows) {
+		_ = tx.Commit(r.Context())
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if err != nil {
+		writeError(w, 500, "internal_error")
+		return
+	}
+	if _, err = tx.Exec(r.Context(), `UPDATE outbox SET status='processing',attempts=attempts+1 WHERE id=$1`, id); err != nil {
+		writeError(w, 500, "internal_error")
+		return
+	}
+	if err = tx.Commit(r.Context()); err != nil {
+		writeError(w, 500, "internal_error")
+		return
+	}
+	var payload map[string]any
+	if json.Unmarshal(raw, &payload) != nil {
+		writeError(w, 500, "internal_error")
+		return
+	}
+	payload["id"] = id
+	payload["topic"] = topic
+	payload["attempts"] = attempts + 1
+	writeJSON(w, 200, payload)
+}
+func (h *Handler) outboxNotificationSucceeded(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathInt64(r, "id")
+	if !ok {
+		writeError(w, 400, "invalid_request")
+		return
+	}
+	tag, err := h.pool.Exec(r.Context(), `UPDATE outbox SET status='completed',processed_at=NOW(),last_error=NULL WHERE id=$1 AND status='processing'`, id)
+	if err != nil {
+		writeError(w, 500, "internal_error")
+		return
+	}
+	if tag.RowsAffected() != 1 {
+		writeError(w, 409, "invalid_state")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true})
+}
+func (h *Handler) outboxNotificationFailed(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathInt64(r, "id")
+	var body struct {
+		Reason      string `json:"reason"`
+		MaxAttempts int    `json:"max_attempts"`
+	}
+	if !ok || !decodeJSON(w, r, &body) || body.MaxAttempts < 1 {
+		writeError(w, 400, "invalid_request")
+		return
+	}
+	tag, err := h.pool.Exec(r.Context(), `UPDATE outbox SET status=CASE WHEN attempts >= $2 THEN 'completed' ELSE 'failed' END,available_at=CASE WHEN attempts >= $2 THEN available_at ELSE NOW()+(LEAST(POWER(2,attempts-1)*5,360)::text||' minutes')::interval END,processed_at=CASE WHEN attempts >= $2 THEN NOW() ELSE NULL END,last_error=$3 WHERE id=$1 AND status='processing'`, id, body.MaxAttempts, body.Reason)
+	if err != nil {
+		writeError(w, 500, "internal_error")
+		return
+	}
+	if tag.RowsAffected() != 1 {
+		writeError(w, 409, "invalid_state")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
 func (h *Handler) aiFailureNotices(w http.ResponseWriter, r *http.Request) {
@@ -564,6 +645,12 @@ func (h *Handler) recoverDeliveries(w http.ResponseWriter, r *http.Request) {
 	if err := h.publications.RecoverInterruptedDeliveries(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error")
 		return
+	}
+	if h.pool != nil {
+		if _, err := h.pool.Exec(r.Context(), `UPDATE outbox SET status='failed',available_at=NOW() WHERE status='processing'`); err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error")
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

@@ -123,6 +123,27 @@ func TestAdminEndpointRequiresTelegramAuthorization(t *testing.T) {
 	}
 }
 
+func TestMountedAdminAPIUsesTelegramAuthorization(t *testing.T) {
+	now := time.Now()
+	validator := telegramauth.NewValidator("test-bot-token", time.Hour)
+	adminAPI := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	router := NewRouter(nil, validator, map[int64]struct{}{123: {}}, nil, nil, nil, adminAPI)
+
+	unauthorized := httptest.NewRecorder()
+	router.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/api/v1/admin/events", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d", unauthorized.Code)
+	}
+
+	authorized := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/admin/events", nil)
+	request.Header.Set("Authorization", "tma "+signedInitData(t, "test-bot-token", 123, now))
+	router.ServeHTTP(authorized, request)
+	if authorized.Code != http.StatusNoContent {
+		t.Fatalf("status=%d body=%s", authorized.Code, authorized.Body.String())
+	}
+}
+
 func TestListPeopleRequiresAdministratorAndParsesQuery(t *testing.T) {
 	now := time.Now()
 	validator := telegramauth.NewValidator("test-bot-token", time.Hour)

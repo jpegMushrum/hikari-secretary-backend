@@ -14,6 +14,7 @@ import (
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/people/application"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/people/domain"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/pagination"
+	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/requestcontext"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/serviceauth"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/telegramauth"
 )
@@ -31,8 +32,6 @@ type PeopleService interface {
 	ListPeople(context.Context, application.ListPeopleQuery) (application.ListPeopleResult, error)
 }
 
-type identityContextKey struct{}
-
 func NewRouter(
 	database Pinger,
 	authenticator Authenticator,
@@ -40,12 +39,18 @@ func NewRouter(
 	botAuthenticator *serviceauth.Validator,
 	people PeopleService,
 	botAPI http.Handler,
+	adminAPIs ...http.Handler,
 ) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", health)
 	mux.HandleFunc("GET /readyz", ready(database))
 	mux.Handle("GET /api/v1/admin/me", requireAdmin(authenticator, adminTelegramIDs, http.HandlerFunc(currentAdministrator)))
 	mux.Handle("GET /api/v1/admin/people", requireAdmin(authenticator, adminTelegramIDs, http.HandlerFunc(listPeople(people))))
+	for _, adminAPI := range adminAPIs {
+		if adminAPI != nil {
+			mux.Handle("/api/v1/admin/", requireAdmin(authenticator, adminTelegramIDs, adminAPI))
+		}
+	}
 	mux.Handle("POST /internal/bot/v1/people/identity", requireBotService(botAuthenticator, http.HandlerFunc(syncTelegramIdentity(people))))
 	if botAPI != nil {
 		mux.Handle("/internal/bot/v1/", requireBotService(botAuthenticator, botAPI))
@@ -71,7 +76,7 @@ func requireAdmin(authenticator Authenticator, adminTelegramIDs map[int64]struct
 			return
 		}
 
-		ctx := context.WithValue(request.Context(), identityContextKey{}, identity)
+		ctx := requestcontext.WithAdministrator(request.Context(), identity)
 		next.ServeHTTP(writer, request.WithContext(ctx))
 	})
 }
@@ -96,7 +101,7 @@ func requireBotService(authenticator *serviceauth.Validator, next http.Handler) 
 }
 
 func currentAdministrator(writer http.ResponseWriter, request *http.Request) {
-	identity, ok := request.Context().Value(identityContextKey{}).(telegramauth.Identity)
+	identity, ok := requestcontext.Administrator(request.Context())
 	if !ok {
 		writeError(writer, http.StatusInternalServerError, "internal_error")
 		return

@@ -11,7 +11,10 @@ import (
 	"time"
 	_ "time/tzdata"
 
+	"github.com/jpegMushrum/hikari-secretary-backend/internal/adapters/adminapi"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/adapters/botapi"
+	eventspostgres "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/events/adapters/postgres"
+	eventsapp "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/events/application"
 	interactionspostgres "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/interactions/adapters/postgres"
 	interactionsapp "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/interactions/application"
 	learningcontent "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent"
@@ -47,6 +50,7 @@ func main() {
 	defer pool.Close()
 	peopleService := peopleapp.NewService(peoplepostgres.NewRepository(pool))
 	interactionService := interactionsapp.NewService(interactionspostgres.NewRepository(pool))
+	eventsService := eventsapp.NewService(eventspostgres.NewRepository(pool))
 	publishingService := publishingapp.NewService(publishingpostgres.NewRepository(pool))
 	var aiService *learningcontent.Service
 	if cfg.AI.Enabled {
@@ -83,6 +87,7 @@ func main() {
 			serviceauth.NewValidator(cfg.BotServiceToken),
 			peopleService,
 			botapi.NewRouter(pool, interactionService, publishingService, aiService),
+			adminapi.NewRouter(eventsService),
 		),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,

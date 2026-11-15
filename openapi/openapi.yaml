@@ -148,6 +148,151 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /api/v1/admin/events:
+    get:
+      summary: Постраничный список мероприятий
+      security:
+        - telegramInitData: []
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, cancelled, completed]
+        - name: search
+          in: query
+          schema:
+            type: string
+            maxLength: 100
+        - name: starts_from
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: starts_to
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [starts_at, title, created_at]
+            default: starts_at
+        - name: order
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: asc
+      responses:
+        '200':
+          description: Список мероприятий
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventsPage'
+        '400':
+          description: Некорректные параметры
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Невалидный Telegram initData
+        '403':
+          description: Нет роли администратора
+  /api/v1/admin/events/{event_id}:
+    get:
+      summary: Карточка мероприятия
+      security:
+        - telegramInitData: []
+      parameters:
+        - $ref: '#/components/parameters/EventID'
+      responses:
+        '200':
+          description: Мероприятие
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Event'
+        '404':
+          description: Мероприятие не найдено
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/admin/events/{event_id}/participants:
+    get:
+      summary: Участники мероприятия
+      security:
+        - telegramInitData: []
+      parameters:
+        - $ref: '#/components/parameters/EventID'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [registered, cancelled]
+        - name: is_russian_citizen
+          in: query
+          schema:
+            type: boolean
+        - name: is_itmo_student
+          in: query
+          schema:
+            type: boolean
+        - name: needs_pass
+          in: query
+          schema:
+            type: boolean
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [name, registered_at, needs_pass]
+            default: name
+        - name: order
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: asc
+      responses:
+        '200':
+          description: Список участников
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParticipantsPage'
+        '400':
+          description: Некорректные параметры
+        '404':
+          description: Мероприятие не найдено
+  /api/v1/admin/events/{event_id}/cancel:
+    post:
+      summary: Отменить активное мероприятие
+      description: Уведомления зарегистрированным участникам атомарно ставятся в outbox.
+      security:
+        - telegramInitData: []
+      parameters:
+        - $ref: '#/components/parameters/EventID'
+      responses:
+        '200':
+          description: Мероприятие отменено
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CancelEventResult'
+        '404':
+          description: Мероприятие не найдено
+        '409':
+          description: Мероприятие уже отменено или завершено
 components:
   securitySchemes:
     telegramInitData:
@@ -174,6 +319,14 @@ components:
         type: integer
         enum: [10, 20, 30]
         default: 10
+    EventID:
+      name: event_id
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
   schemas:
     HealthStatus:
       type: object
@@ -296,3 +449,106 @@ components:
           type: string
         display_name:
           type: string
+    Event:
+      type: object
+      required: [id, title, starts_at, ends_at, status, published, registrations, cancelled_registrations, attended, created_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+        publication_id:
+          type: [integer, 'null']
+          format: int64
+        title:
+          type: string
+        starts_at:
+          type: string
+          format: date-time
+        ends_at:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [active, cancelled, completed]
+        published:
+          type: boolean
+        registrations:
+          type: integer
+          format: int64
+        cancelled_registrations:
+          type: integer
+          format: int64
+        attended:
+          type: integer
+          format: int64
+        created_at:
+          type: string
+          format: date-time
+    Participant:
+      type: object
+      required: [person_id, telegram_user_id, full_name, registered_at, status, needs_pass]
+      properties:
+        person_id:
+          type: integer
+          format: int64
+        telegram_user_id:
+          type: integer
+          format: int64
+        full_name:
+          type: string
+        username:
+          type: [string, 'null']
+        registered_at:
+          type: string
+          format: date-time
+        cancelled_at:
+          type: [string, 'null']
+          format: date-time
+        status:
+          type: string
+          enum: [registered, cancelled]
+        attended:
+          type: [boolean, 'null']
+        is_russian_citizen:
+          type: [boolean, 'null']
+        is_itmo_student:
+          type: [boolean, 'null']
+        needs_pass:
+          type: boolean
+    EventsPage:
+      type: object
+      required: [items, page, sort, filters]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Event'
+        page:
+          $ref: '#/components/schemas/PageMetadata'
+        sort:
+          type: object
+        filters:
+          type: object
+    ParticipantsPage:
+      type: object
+      required: [items, page, sort, filters]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Participant'
+        page:
+          $ref: '#/components/schemas/PageMetadata'
+        sort:
+          type: object
+        filters:
+          type: object
+    CancelEventResult:
+      type: object
+      required: [event, notifications_queued]
+      properties:
+        event:
+          $ref: '#/components/schemas/Event'
+        notifications_queued:
+          type: integer
+          format: int64

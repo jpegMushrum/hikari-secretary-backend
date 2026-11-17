@@ -18,6 +18,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	eventspostgres "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/events/adapters/postgres"
+	eventsapp "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/events/application"
 	interactions "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/interactions/application"
 	learningcontent "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent"
 	publishing "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/application"
@@ -780,55 +782,20 @@ func (h *Handler) createEvent(writer http.ResponseWriter, request *http.Request)
 		return
 	}
 	ctx := request.Context()
-	tx, err := h.pool.BeginTx(ctx, pgx.TxOptions{})
+	_, err := eventspostgres.NewRepository(h.pool).Create(ctx, eventspostgres.CreateEvent{PublicationID: body.PublicationID, Title: body.Title, StartsAt: start, EndsAt: end}, body.CreatorTelegramID)
 	if err != nil {
-		writeError(writer, http.StatusInternalServerError, "internal_error")
-		return
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", int64(20261105)); err != nil {
-		writeError(writer, http.StatusInternalServerError, "internal_error")
-		return
-	}
-	var eventID int64
-	err = tx.QueryRow(ctx, `SELECT event_id FROM event_publication_references WHERE external_publication_id=$1 ORDER BY CASE provider WHEN 'hikari_publishing' THEN 0 ELSE 1 END LIMIT 1`, strconv.FormatInt(body.PublicationID, 10)).Scan(&eventID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		var activeCount int64
-		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM events WHERE status='active' AND ends_at>NOW()`).Scan(&activeCount); err != nil {
-			writeError(writer, http.StatusInternalServerError, "internal_error")
-			return
+		switch {
+		case errors.Is(err, eventspostgres.ErrInvalidEvent):
+			writeError(writer, 400, "invalid_request")
+		case errors.Is(err, eventspostgres.ErrEventCapacity):
+			writeError(writer, 409, "capacity_limit")
+		case errors.Is(err, eventspostgres.ErrPublicationState), errors.Is(err, eventsapp.ErrEventNotActive):
+			writeError(writer, 409, "invalid_state")
+		case errors.Is(err, pgx.ErrNoRows):
+			writeError(writer, 404, "not_found")
+		default:
+			writeError(writer, 500, "internal_error")
 		}
-		if activeCount >= maxActiveEvents {
-			writeError(writer, http.StatusConflict, "capacity_limit")
-			return
-		}
-		var creatorID *int64
-		if body.CreatorTelegramID > 0 {
-			_ = tx.QueryRow(ctx, "SELECT person_id FROM telegram_identities WHERE telegram_user_id=$1", body.CreatorTelegramID).Scan(&creatorID)
-		}
-		if err := tx.QueryRow(ctx, `INSERT INTO events(title,starts_at,ends_at,created_by_person_id) VALUES($1,$2,$3,$4) RETURNING id`, strings.TrimSpace(body.Title), start, end, creatorID).Scan(&eventID); err != nil {
-			writeError(writer, http.StatusInternalServerError, "internal_error")
-			return
-		}
-		if _, err := tx.Exec(ctx, `INSERT INTO event_publication_references(event_id,provider,external_publication_id,published) VALUES($1,'hikari_publishing',$2,FALSE)`, eventID, strconv.FormatInt(body.PublicationID, 10)); err != nil {
-			writeError(writer, http.StatusInternalServerError, "internal_error")
-			return
-		}
-	} else if err != nil {
-		writeError(writer, http.StatusInternalServerError, "internal_error")
-		return
-	} else {
-		if _, err := tx.Exec(ctx, `UPDATE events SET title=$2,starts_at=$3,ends_at=$4,status='active',cancelled_at=NULL,updated_at=NOW() WHERE id=$1`, eventID, strings.TrimSpace(body.Title), start, end); err != nil {
-			writeError(writer, http.StatusInternalServerError, "internal_error")
-			return
-		}
-		if _, err := tx.Exec(ctx, `UPDATE event_publication_references SET published=FALSE WHERE event_id=$1`, eventID); err != nil {
-			writeError(writer, http.StatusInternalServerError, "internal_error")
-			return
-		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		writeError(writer, http.StatusInternalServerError, "internal_error")
 		return
 	}
 	event, err := h.event(ctx, body.PublicationID)
@@ -1184,45 +1151,29 @@ func (h *Handler) cancelEvent(writer http.ResponseWriter, request *http.Request)
 		writeError(writer, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	tx, err := h.pool.Begin(request.Context())
-	if err != nil {
-		writeError(writer, http.StatusInternalServerError, "internal_error")
-		return
-	}
-	defer func() { _ = tx.Rollback(request.Context()) }()
 	var eventID int64
-	if err := tx.QueryRow(request.Context(), `UPDATE events SET status='cancelled',cancelled_at=NOW(),updated_at=NOW() WHERE id=(SELECT event_id FROM event_publication_references WHERE external_publication_id=$1 LIMIT 1) AND status='active' AND ends_at>NOW() RETURNING id`, strconv.FormatInt(publicationID, 10)).Scan(&eventID); errors.Is(err, pgx.ErrNoRows) {
+	err := h.pool.QueryRow(request.Context(), "SELECT event_id FROM event_publication_references WHERE external_publication_id=$1 ORDER BY CASE provider WHEN 'hikari_publishing' THEN 0 ELSE 1 END LIMIT 1", strconv.FormatInt(publicationID, 10)).Scan(&eventID)
+	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(writer, http.StatusNotFound, "not_found")
 		return
-	} else if err != nil {
-		writeError(writer, http.StatusInternalServerError, "internal_error")
-		return
 	}
-	rows, err := tx.Query(request.Context(), `SELECT ti.telegram_user_id,e.title FROM event_registrations er JOIN telegram_identities ti ON ti.person_id=er.person_id JOIN events e ON e.id=er.event_id WHERE er.event_id=$1 AND er.status='registered'`, eventID)
 	if err != nil {
 		writeError(writer, http.StatusInternalServerError, "internal_error")
 		return
 	}
-	defer rows.Close()
-	items := make([]map[string]any, 0)
-	for rows.Next() {
-		var id int64
-		var title string
-		if err := rows.Scan(&id, &title); err != nil {
-			writeError(writer, http.StatusInternalServerError, "internal_error")
-			return
-		}
-		items = append(items, map[string]any{"user_id": id, "title": title, "text": title})
+	service := eventsapp.NewService(eventspostgres.NewRepository(h.pool))
+	_, err = service.Cancel(request.Context(), eventID, 0)
+	if errors.Is(err, eventsapp.ErrEventNotFound) || errors.Is(err, eventsapp.ErrEventNotActive) {
+		writeError(writer, http.StatusNotFound, "not_found")
+		return
 	}
-	if err := rows.Err(); err != nil {
+	if err != nil {
 		writeError(writer, http.StatusInternalServerError, "internal_error")
 		return
 	}
-	if err := tx.Commit(request.Context()); err != nil {
-		writeError(writer, http.StatusInternalServerError, "internal_error")
-		return
-	}
-	writeJSON(writer, http.StatusOK, items)
+	// Preserve the bot response shape. Delivery now belongs to the outbox worker,
+	// so the callback must not send a second notification to these participants.
+	writeJSON(writer, http.StatusOK, []map[string]any{})
 }
 
 func (h *Handler) dueReminders(writer http.ResponseWriter, request *http.Request) {

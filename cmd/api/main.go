@@ -87,7 +87,7 @@ func main() {
 			serviceauth.NewValidator(cfg.BotServiceToken),
 			peopleService,
 			botapi.NewRouter(pool, interactionService, publishingService, aiService),
-			adminapi.NewRouter(eventsService),
+			(&adminapi.Management{Pool: pool, Publications: publishingService}).Router(adminapi.NewRouter(eventsService)),
 		),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,

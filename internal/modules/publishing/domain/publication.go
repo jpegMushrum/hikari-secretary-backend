@@ -6,6 +6,7 @@ import (
 )
 
 var ErrPendingPublicationLimit = errors.New("pending publication limit reached")
+var ErrInvalidState = errors.New("publication is not a draft")
 
 type Status string
 
@@ -26,6 +27,8 @@ type Target struct {
 	MessageThreadID        *int64
 }
 type Draft struct {
+	ID                int64 // Nonzero replaces an existing draft under a row lock.
+	Targets           []Target
 	CreatorTelegramID int64
 	Text              string
 	Entities          []map[string]any

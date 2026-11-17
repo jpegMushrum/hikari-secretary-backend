@@ -190,7 +190,11 @@ func (r *Repository) Cancel(ctx context.Context, id, actor int64) (application.C
 		}
 	}
 	data, _ := json.Marshal(map[string]any{"notifications_queued": len(targets)})
-	_, err = tx.Exec(ctx, `INSERT INTO audit_log(actor_type,actor_id,action,object_type,object_id,idempotency_key,data) VALUES('telegram_admin',$1,'event.cancelled','event',$2,$3,$4::jsonb) ON CONFLICT(actor_type,idempotency_key) DO NOTHING`, fmt.Sprint(actor), id, fmt.Sprintf("cancel-event:%d", id), string(data))
+	actorType := "telegram_admin"
+	if actor == 0 {
+		actorType = "bot_service"
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO audit_log(actor_type,actor_id,action,object_type,object_id,idempotency_key,data) VALUES($5,$1,'event.cancelled','event',$2,$3,$4::jsonb) ON CONFLICT(actor_type,idempotency_key) DO NOTHING`, fmt.Sprint(actor), id, fmt.Sprintf("cancel-event:%d", id), string(data), actorType)
 	if err != nil {
 		return application.CancelResult{}, err
 	}

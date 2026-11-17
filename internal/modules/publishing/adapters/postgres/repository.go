@@ -3,7 +3,9 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/jackc/pgx/v5"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -33,12 +35,40 @@ func (r *Repository) CreateDraft(ctx context.Context, draft domain.Draft) (int64
 	}
 	defer tx.Rollback(ctx)
 	var id int64
-	err = tx.QueryRow(ctx, `INSERT INTO publications(creator_telegram_id,text,entities,rich_message,source,source_key) VALUES($1,$2,$3::jsonb,$4::jsonb,$5,NULLIF($6,'')) ON CONFLICT(source_key) DO UPDATE SET source_key=EXCLUDED.source_key RETURNING id`, draft.CreatorTelegramID, draft.Text, string(entitiesJSON), rich, draft.Source, draft.SourceKey).Scan(&id)
+	if draft.ID > 0 {
+		var status string
+		if err = tx.QueryRow(ctx, "SELECT status FROM publications WHERE id=$1 FOR UPDATE", draft.ID).Scan(&status); err != nil {
+			return 0, err
+		}
+		if status != "draft" {
+			return 0, domain.ErrInvalidState
+		}
+		if _, err = tx.Exec(ctx, "DELETE FROM publication_media WHERE publication_id=$1", draft.ID); err != nil {
+			return 0, err
+		}
+		if _, err = tx.Exec(ctx, "DELETE FROM publication_deliveries WHERE publication_id=$1", draft.ID); err != nil {
+			return 0, err
+		}
+		err = tx.QueryRow(ctx, "UPDATE publications SET text=$2,entities=$3::jsonb,rich_message=$4::jsonb,source=$5 WHERE id=$1 RETURNING id", draft.ID, draft.Text, string(entitiesJSON), rich, draft.Source).Scan(&id)
+	} else {
+		err = tx.QueryRow(ctx, `INSERT INTO publications(creator_telegram_id,text,entities,rich_message,source,source_key) VALUES($1,$2,$3::jsonb,$4::jsonb,$5,NULLIF($6,'')) ON CONFLICT(source_key) DO NOTHING RETURNING id`, draft.CreatorTelegramID, draft.Text, string(entitiesJSON), rich, draft.Source, draft.SourceKey).Scan(&id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			if err = tx.QueryRow(ctx, "SELECT id FROM publications WHERE source_key=$1", draft.SourceKey).Scan(&id); err != nil {
+				return 0, err
+			}
+			return id, tx.Commit(ctx)
+		}
+	}
 	if err != nil {
 		return 0, err
 	}
 	for _, media := range draft.Media {
 		if _, err = tx.Exec(ctx, `INSERT INTO publication_media(publication_id,position,path) VALUES($1,$2,$3) ON CONFLICT(publication_id,position) DO NOTHING`, id, media.Position, media.Path); err != nil {
+			return 0, err
+		}
+	}
+	for _, target := range draft.Targets {
+		if _, err = tx.Exec(ctx, `INSERT INTO publication_deliveries(publication_id,target_key,target_name,destination,message_thread_id) VALUES($1,$2,$3,$4,$5) ON CONFLICT(publication_id,target_key) DO NOTHING`, id, target.Key, target.Name, target.Destination, target.MessageThreadID); err != nil {
 			return 0, err
 		}
 	}
@@ -85,7 +115,7 @@ func (r *Repository) CreateScheduled(ctx context.Context, scheduled domain.Sched
 		return id, tx.Commit(ctx)
 	}
 	if status != string(domain.StatusDraft) {
-		return 0, fmt.Errorf("publication is not a draft")
+		return 0, domain.ErrInvalidState
 	}
 
 	for _, media := range scheduled.Media {
@@ -162,7 +192,7 @@ func (r *Repository) ToggleTarget(ctx context.Context, publicationID int64, targ
 		return err
 	}
 	if status != string(domain.StatusDraft) {
-		return fmt.Errorf("publication is not a draft")
+		return domain.ErrInvalidState
 	}
 	var exists bool
 	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM publication_deliveries WHERE publication_id=$1 AND target_key=$2)`, publicationID, target.Key).Scan(&exists); err != nil {

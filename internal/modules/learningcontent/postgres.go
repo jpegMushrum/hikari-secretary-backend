@@ -15,9 +15,7 @@ type PostgresRepository struct{ pool *pgxpool.Pool }
 func NewPostgresRepository(pool *pgxpool.Pool) *PostgresRepository { return &PostgresRepository{pool} }
 
 func (r *PostgresRepository) Preferences(ctx context.Context) (Options, error) {
-	var value Options
-	err := r.pool.QueryRow(ctx, `SELECT jlpt_level,admin_comment FROM ai_topic_settings WHERE id=1`).Scan(&value.JLPTLevel, &value.AdminComment)
-	return value, err
+	return r.Settings(ctx)
 }
 func (r *PostgresRepository) History(ctx context.Context, exclude *int64) ([]Topic, error) {
 	rows, err := r.pool.Query(ctx, `SELECT topic FROM ai_topic_jobs WHERE status='scheduled' AND topic IS NOT NULL AND ($1::bigint IS NULL OR publication_id<>$1) ORDER BY scheduled_for DESC`, exclude)

@@ -218,6 +218,20 @@ func (r *Repository) Schedule(ctx context.Context, publicationID int64, when tim
 	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(734001)`); err != nil {
 		return false, err
 	}
+	var status string
+	if err = tx.QueryRow(ctx, `SELECT status FROM publications WHERE id=$1 FOR UPDATE`, publicationID).Scan(&status); err != nil {
+		return false, err
+	}
+	if status != "draft" {
+		return false, nil
+	}
+	var invalidEvent bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM events e JOIN event_publication_references ref ON ref.event_id=e.id WHERE ref.external_publication_id=$1 AND (e.status<>'active' OR e.starts_at<=$2 OR e.starts_at<=NOW()))`, fmt.Sprint(publicationID), when).Scan(&invalidEvent); err != nil {
+		return false, err
+	}
+	if invalidEvent {
+		return false, nil
+	}
 	var count int
 	if err = tx.QueryRow(ctx, `SELECT COUNT(*) FROM publications WHERE status='scheduled'`).Scan(&count); err != nil {
 		return false, err

@@ -148,6 +148,73 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /api/v1/admin/event-workspace:
+    get:
+      summary: Единый список мероприятий и черновиков публикаций
+      description: |
+        Черновик имеет kind=draft и id публикации; переход выполняется по publication_id.
+        После постановки в очередь связанное мероприятие имеет kind=event и id мероприятия.
+        Связанное с черновиком мероприятие не дублируется. Черновики без даты
+        исключаются фильтром периода. Сортировка, подсчёт и пагинация применяются ко всему списку.
+      security:
+        - telegramInitData: []
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: status
+          in: query
+          schema: {type: string, enum: [draft, active, completed, cancelled]}
+        - name: search
+          in: query
+          schema: {type: string, maxLength: 100}
+        - name: starts_from
+          in: query
+          schema: {type: string, format: date-time}
+        - name: starts_to
+          in: query
+          schema: {type: string, format: date-time}
+        - name: sort
+          in: query
+          schema: {type: string, enum: [starts_at, title, created_at], default: starts_at}
+        - name: order
+          in: query
+          schema: {type: string, enum: [asc, desc], default: asc}
+      responses:
+        '200':
+          description: Страница единого списка; даты без значения равны null
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, page, filters, sort]
+                properties:
+                  page: {$ref: '#/components/schemas/PageMetadata'}
+                  filters: {type: object}
+                  sort: {type: object}
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [kind, id, publication_id, title, starts_at, ends_at, status, created_at, registrations, attended]
+                      properties:
+                        kind: {type: string, enum: [event, draft]}
+                        id: {type: integer, format: int64}
+                        publication_id: {type: [integer, 'null'], format: int64}
+                        title: {type: string}
+                        starts_at: {type: [string, 'null'], format: date-time}
+                        ends_at: {type: [string, 'null'], format: date-time}
+                        status: {type: string, enum: [draft, active, completed, cancelled]}
+                        created_at: {type: string, format: date-time}
+                        registrations: {type: integer}
+                        attended: {type: integer}
+        '400':
+          description: Некорректный фильтр, сортировка или пагинация
+        '401':
+          description: Необходима авторизация Telegram
+        '403':
+          description: Только для администраторов
+        '500':
+          description: Ошибка чтения данных
   /api/v1/admin/events:
     post:
       "summary": "Create/update event linked to a draft; starts_at must be in the future"
@@ -670,6 +737,14 @@ paths:
                     "type": "array"
                     "items":
                       "type": "string"
+                  "media":
+                    type: array
+                    items:
+                      type: object
+                      required: [position, url]
+                      properties:
+                        position: {type: integer, minimum: 0}
+                        url: {type: string, description: Защищённый относительный URL; нужен Authorization}
                   "deliveries":
                     "type": "array"
                     "items":
@@ -1103,6 +1178,10 @@ paths:
                         "person_id":
                           "type": "integer"
                           "format": "int64"
+                        "author_name":
+                          "type": "string"
+                        "event_title":
+                          "type": ["string", "null"]
                         "event_id":
                           "type":
                             - "integer"
@@ -1408,6 +1487,150 @@ paths:
             "application/json":
               "schema":
                 "$ref": "#/components/schemas/Error"
+  /api/v1/admin/publications/{id}/settings:
+    put:
+      summary: Настроить цели и мероприятие черновика без изменения сообщения
+      description: Одна транзакция. Telegram entities, rich_message, медиа и source сохраняются. Отсутствующий/null event сохраняет существующую связь, не отключает регистрацию.
+      security: [{telegramInitData: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [target_keys]
+              properties:
+                target_keys:
+                  type: array
+                  uniqueItems: true
+                  items: {type: string}
+                  description: Только ключи из GET /targets. Пустой массив разрешён для черновика.
+                event:
+                  type: [object, 'null']
+                  additionalProperties: false
+                  required: [title, starts_at, ends_at]
+                  properties:
+                    title: {type: string, minLength: 1, maxLength: 160}
+                    starts_at: {type: string, format: date-time}
+                    ends_at: {type: string, format: date-time}
+      responses:
+        '200':
+          description: Обновлённая публикация в формате GET /publications/{id}
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        '400': {description: invalid_request или invalid_target}
+        '401': {description: Не авторизован}
+        '403': {description: Не администратор}
+        '404': {description: Черновик не найден}
+        '409': {description: invalid_state, capacity_limit или event_not_active}
+        '500': {description: Ошибка хранения; транзакция откатывается}
+  /api/v1/admin/publications/{id}/media/{position}:
+    get:
+      summary: Прочитать фотографию публикации для предпросмотра
+      description: Позиция с нуля; только файлы внутри ADMIN_MEDIA_DIR или BOT_MEDIA_DIR. Файловые пути клиент не задаёт. Ответ private, no-store.
+      security: [{telegramInitData: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+        - name: position
+          in: path
+          required: true
+          schema: {type: integer, minimum: 0}
+      responses:
+        '200':
+          description: Фото из общего media volume
+          content:
+            image/jpeg:
+              schema: {type: string, format: binary}
+            image/png:
+              schema: {type: string, format: binary}
+        '400': {description: Некорректный ID или позиция}
+        '401': {description: Не авторизован}
+        '403': {description: Не администратор}
+        '404': {description: Файл отсутствует или находится вне разрешённых каталогов}
+  /api/v1/admin/ai/settings:
+    get:
+      summary: Настройки материалов ИИ и состояние подключения генератора
+      security: [{telegramInitData: []}]
+      responses:
+        '200':
+          description: Общие с ботом настройки; ключ провайдера не возвращается
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AISettings'}
+        '401': {description: Невалидный или отсутствующий initData}
+        '403': {description: Не администратор}
+        '500': {description: Ошибка хранения}
+    put:
+      summary: Сохранить настройки материалов ИИ
+      description: Доступно и без ключа провайдера. Автор изменения берётся из проверенного initData.
+      security: [{telegramInitData: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AISettingsInput'}
+      responses:
+        '200':
+          description: Сохранённые настройки
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AISettings'}
+        '400': {description: Некорректные или неизвестные поля}
+        '401': {description: Невалидный или отсутствующий initData}
+        '403': {description: Не администратор}
+        '500': {description: Ошибка хранения}
+  /api/v1/admin/ai/history:
+    get:
+      summary: История заданий подготовки материалов ИИ
+      security: [{telegramInitData: []}]
+      parameters:
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/PageSize'}
+        - name: status
+          in: query
+          schema: {type: string, enum: [pending, retry, generating, scheduled, failed, cancelled]}
+        - name: sort
+          in: query
+          schema: {type: string, enum: [scheduled_for], default: scheduled_for}
+        - name: order
+          in: query
+          schema: {type: string, enum: [asc, desc], default: desc}
+      responses:
+        '200':
+          description: Задания, включая незавершённые; стабильная сортировка по scheduled_for и id
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, page, sort, filters]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/AIJob'}
+                  page: {$ref: '#/components/schemas/PageMetadata'}
+                  sort:
+                    type: object
+                    properties:
+                      field: {type: string, const: scheduled_for}
+                      order: {type: string, enum: [asc, desc]}
+                  filters:
+                    type: object
+                    properties:
+                      status: {type: string}
+        '400': {description: Некорректные параметры или повторные значения}
+        '401': {description: Невалидный или отсутствующий initData}
+        '403': {description: Не администратор}
+        '500': {description: Ошибка хранения}
 components:
   securitySchemes:
     telegramInitData:
@@ -1443,6 +1666,34 @@ components:
         format: int64
         minimum: 1
   schemas:
+    AISettingsInput:
+      type: object
+      additionalProperties: false
+      required: [jlpt_level]
+      properties:
+        jlpt_level: {type: string, enum: [N5, N4, N3, N2, N1]}
+        admin_comment: {type: [string, 'null'], maxLength: 500}
+    AISettings:
+      type: object
+      required: [jlpt_level, admin_comment, enabled]
+      properties:
+        jlpt_level: {type: string, enum: [N5, N4, N3, N2, N1]}
+        admin_comment: {type: [string, 'null'], maxLength: 500}
+        enabled: {type: boolean, description: Ключ и конфигурация генератора заданы при запуске backend}
+    AIJob:
+      type: object
+      required: [id, scheduled_for, status, attempts, topic, publication_id, last_error]
+      properties:
+        id: {type: integer, format: int64}
+        scheduled_for: {type: string, format: date-time}
+        status: {type: string, enum: [pending, retry, generating, scheduled, failed, cancelled]}
+        attempts: {type: integer, minimum: 0}
+        topic:
+          type: [object, 'null']
+          description: Материал в формате Topic модуля learningcontent, включая импортированную историю
+          additionalProperties: true
+        publication_id: {type: [integer, 'null'], format: int64}
+        last_error: {type: [string, 'null']}
     HealthStatus:
       type: object
       required: [status]

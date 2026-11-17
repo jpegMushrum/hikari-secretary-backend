@@ -28,10 +28,7 @@ type Topic struct {
 	Grammar         []GrammarPoint   `json:"grammar"`
 }
 
-type Options struct {
-	JLPTLevel    string  `json:"jlpt_level"`
-	AdminComment *string `json:"admin_comment"`
-}
+type Options = Settings
 
 func (t Topic) Validate(questionCount, vocabularyCount, grammarCount int) error {
 	levels := map[string]bool{"N5": true, "N4": true, "N3": true, "N2": true, "N1": true}

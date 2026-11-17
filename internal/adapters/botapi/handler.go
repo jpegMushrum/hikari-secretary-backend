@@ -709,14 +709,12 @@ func (h *Handler) markPublicationNotified(w http.ResponseWriter, r *http.Request
 }
 
 func (h *Handler) aiPreferences(w http.ResponseWriter, r *http.Request) {
-	var level string
-	var comment *string
-	err := h.pool.QueryRow(r.Context(), `SELECT jlpt_level,admin_comment FROM ai_topic_settings WHERE id=1`).Scan(&level, &comment)
+	settings, err := learningcontent.NewPostgresRepository(h.pool).Settings(r.Context())
 	if err != nil {
 		writeError(w, 500, "internal_error")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"jlpt_level": level, "admin_comment": comment})
+	writeJSON(w, 200, settings)
 }
 func (h *Handler) saveAIPreferences(w http.ResponseWriter, r *http.Request) {
 	var body struct {
@@ -724,15 +722,15 @@ func (h *Handler) saveAIPreferences(w http.ResponseWriter, r *http.Request) {
 		AdminComment *string `json:"admin_comment"`
 		UpdatedBy    int64   `json:"updated_by"`
 	}
-	if !decodeJSON(w, r, &body) || !map[string]bool{"N5": true, "N4": true, "N3": true, "N2": true, "N1": true}[body.JLPTLevel] {
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	settings := learningcontent.Settings{JLPTLevel: body.JLPTLevel, AdminComment: body.AdminComment}
+	if settings.Validate() != nil {
 		writeError(w, 400, "invalid_request")
 		return
 	}
-	if body.AdminComment != nil && utf8.RuneCountInString(*body.AdminComment) > 500 {
-		writeError(w, 400, "invalid_request")
-		return
-	}
-	_, err := h.pool.Exec(r.Context(), `UPDATE ai_topic_settings SET jlpt_level=$1,admin_comment=$2,updated_by=$3,updated_at=NOW() WHERE id=1`, body.JLPTLevel, body.AdminComment, body.UpdatedBy)
+	err := learningcontent.NewPostgresRepository(h.pool).SaveSettings(r.Context(), settings, body.UpdatedBy)
 	if err != nil {
 		writeError(w, 500, "internal_error")
 		return

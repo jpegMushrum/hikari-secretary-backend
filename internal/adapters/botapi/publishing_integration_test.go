@@ -5,6 +5,7 @@ package botapi_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/adapters/botapi"
 	interactionspostgres "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/interactions/adapters/postgres"
@@ -19,6 +21,7 @@ import (
 	publishingpostgres "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/adapters/postgres"
 	publishing "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/application"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/domain"
+	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/migrations"
 )
 
 func integrationPool(t *testing.T) *pgxpool.Pool {
@@ -27,21 +30,43 @@ func integrationPool(t *testing.T) *pgxpool.Pool {
 	if dsn == "" {
 		t.Skip("TEST_DATABASE_URL is not configured")
 	}
-	pool, err := pgxpool.New(context.Background(), dsn)
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.Ping(context.Background()); err != nil {
-		pool.Close()
+	t.Cleanup(func() { _ = conn.Close(ctx) })
+	schema := fmt.Sprintf("bot_test_%d", time.Now().UnixNano())
+	if _, err = conn.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if _, err := conn.Exec(ctx, "DROP SCHEMA "+schema+" CASCADE"); err != nil {
+			t.Error(err)
+		}
+	})
+	if _, err = conn.Exec(ctx, "SET search_path TO "+schema); err != nil {
+		t.Fatal(err)
+	}
+	if err = migrations.Run(ctx, conn, "../../../migrations"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
 	return pool
 }
 
 func TestPublishingDeliveryMakesEventAvailableToUsers(t *testing.T) {
 	ctx := context.Background()
 	pool := integrationPool(t)
-	defer pool.Close()
 	repository := publishingpostgres.NewRepository(pool)
 	service := publishing.NewService(repository)
 	key := "integration-" + time.Now().UTC().Format("20060102150405.000000000")
@@ -49,9 +74,6 @@ func TestPublishingDeliveryMakesEventAvailableToUsers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		_, _ = pool.Exec(ctx, `DELETE FROM publications WHERE id=$1 AND source_key=$2`, publicationID, key)
-	})
 	if err := service.ToggleTarget(ctx, publicationID, domain.Target{Key: "integration", Name: "Integration", Destination: "-1000001"}); err != nil {
 		t.Fatal(err)
 	}
@@ -62,10 +84,6 @@ func TestPublishingDeliveryMakesEventAvailableToUsers(t *testing.T) {
 	if err := pool.QueryRow(ctx, `INSERT INTO events(title,starts_at,ends_at) VALUES('Integration event',NOW()+INTERVAL '1 hour',NOW()+INTERVAL '2 hours') RETURNING id`).Scan(&eventID); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		_, _ = pool.Exec(ctx, `DELETE FROM event_publication_references WHERE event_id=$1`, eventID)
-		_, _ = pool.Exec(ctx, `DELETE FROM events WHERE id=$1`, eventID)
-	})
 	if _, err := pool.Exec(ctx, `INSERT INTO event_publication_references(event_id,provider,external_publication_id,published) VALUES($1,'hikari_publishing',$2,FALSE)`, eventID, stringID(publicationID)); err != nil {
 		t.Fatal(err)
 	}

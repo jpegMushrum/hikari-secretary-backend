@@ -23,10 +23,15 @@ import (
 type Management struct {
 	Pool         *pgxpool.Pool
 	Publications *publishing.Service
+	AIEnabled    bool
 }
 
 func (h *Management) Router(events http.Handler) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v1/admin/ai/settings", h.aiSettings)
+	mux.HandleFunc("GET /api/v1/admin/event-workspace", h.eventWorkspace)
+	mux.HandleFunc("PUT /api/v1/admin/ai/settings", h.saveAISettings)
+	mux.HandleFunc("GET /api/v1/admin/ai/history", h.aiHistory)
 	mux.HandleFunc("POST /api/v1/admin/events", h.createEvent)
 	mux.HandleFunc("POST /api/v1/admin/publications", h.createPublication)
 	mux.HandleFunc("PUT /api/v1/admin/publications/{id}", h.createPublication)
@@ -35,6 +40,8 @@ func (h *Management) Router(events http.Handler) http.Handler {
 	mux.HandleFunc("GET /api/v1/admin/media/{id}", h.getMedia)
 	mux.HandleFunc("GET /api/v1/admin/publications", h.listPublications)
 	mux.HandleFunc("GET /api/v1/admin/publications/{id}", h.getPublication)
+	mux.HandleFunc("PUT /api/v1/admin/publications/{id}/settings", h.configurePublication)
+	mux.HandleFunc("GET /api/v1/admin/publications/{id}/media/{position}", h.publicationMedia)
 	mux.HandleFunc("POST /api/v1/admin/publications/{id}/cancel", h.cancelPublication)
 	mux.HandleFunc("POST /api/v1/admin/publications/{id}/schedule", h.schedulePublication)
 	mux.HandleFunc("GET /api/v1/admin/feedback", h.listFeedback)
@@ -88,6 +95,13 @@ func (h *Management) getPublication(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	p["media_ids"] = ids
+	media := []map[string]any{}
+	if paths, ok := p["media_paths"].([]string); ok {
+		for i := range paths {
+			media = append(media, map[string]any{"position": i, "url": fmt.Sprintf("/api/v1/admin/publications/%d/media/%d", id, i)})
+		}
+	}
+	p["media"] = media
 	delete(p, "media_paths")
 	writeJSON(w, 200, p)
 }
@@ -209,8 +223,8 @@ func (h *Management) list(w http.ResponseWriter, r *http.Request, feedback bool)
 	}
 	table, fields := "publications p", "p.id,p.creator_telegram_id,p.text,p.status,p.source,p.scheduled_at,p.created_at"
 	if feedback {
-		table = "feedback p"
-		fields = "p.id,p.person_id,p.event_id,p.text,p.created_at"
+		table = "feedback p JOIN people author ON author.id=p.person_id LEFT JOIN telegram_identities ti ON ti.person_id=author.id LEFT JOIN events event ON event.id=p.event_id"
+		fields = "p.id,p.person_id,p.event_id,p.text,p.created_at,COALESCE(author.full_name,ti.display_name,'Участник') AS author_name,event.title AS event_title"
 	}
 	for _, key := range []string{"status", "source", "target", "event_id", "author_id", "kind", "from", "to"} {
 		raw, e := one(values, key)

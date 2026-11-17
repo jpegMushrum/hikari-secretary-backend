@@ -89,11 +89,56 @@ func TestAdminLifecyclePostgres(t *testing.T) {
 		return result
 	}
 	var img bytes.Buffer
+	settings := call("GET", "/ai/settings", nil, 200)
+	if settings["enabled"] != false || settings["jlpt_level"] != "N3" {
+		t.Fatal(settings)
+	}
+	call("PUT", "/ai/settings", map[string]any{"jlpt_level": "N2", "admin_comment": "Темы для клуба"}, 200)
+	var actor int64
+	if err := pool.QueryRow(ctx, "SELECT updated_by FROM ai_topic_settings WHERE id=1").Scan(&actor); err != nil || actor != 123 {
+		t.Fatalf("actor=%d err=%v", actor, err)
+	}
+	call("PUT", "/ai/settings", map[string]any{"jlpt_level": "N9"}, 400)
+	call("PUT", "/ai/settings", map[string]any{"jlpt_level": "N3", "updated_by": 999}, 400)
+	if _, err := pool.Exec(ctx, `INSERT INTO ai_topic_jobs(scheduled_for,status,next_attempt_at,topic) VALUES(NOW(),'scheduled',NOW(),'{"title":"Example"}'),(NOW()+INTERVAL '1 day','failed',NOW(),NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	history := call("GET", "/ai/history?status=scheduled&page_size=10", nil, 200)
+	if len(history["items"].([]any)) != 1 || history["page"].(map[string]any)["total_items"] != float64(1) {
+		t.Fatal(history)
+	}
+	if history["items"].([]any)[0].(map[string]any)["topic"].(map[string]any)["title"] != "Example" {
+		t.Fatal(history)
+	}
+	call("GET", "/ai/history?sort=sql", nil, 400)
+	call("GET", "/ai/history?status=failed&status=scheduled", nil, 400)
+	call("GET", "/ai/history?order=desc;DROP", nil, 400)
+	call("GET", "/ai/history?order=desc%3BDROP", nil, 400)
+	if len(call("GET", "/ai/history?page=2&page_size=10", nil, 200)["items"].([]any)) != 0 {
+		t.Fatal("expected empty page")
+	}
+	botPreferences := botapi.NewRouter(pool, nil, pubs)
+	botResponse := httptest.NewRecorder()
+	botPreferences.ServeHTTP(botResponse, httptest.NewRequest("GET", "/internal/bot/v1/ai-topics/preferences", nil))
+	if botResponse.Code != 200 || !bytes.Contains(botResponse.Body.Bytes(), []byte(`"N2"`)) {
+		t.Fatalf("shared bot preferences: %s", botResponse.Body.String())
+	}
 	_ = png.Encode(&img, image.NewRGBA(image.Rect(0, 0, 2, 2)))
 	media := call("POST", "/media", img.Bytes(), 201)["id"].(string)
 	call("POST", "/media", []byte("not an image"), 400)
 	draft := call("POST", "/publications", map[string]any{"text": "Test", "media_ids": []string{media}, "target_keys": []string{"test"}}, 201)
 	pub := int64(draft["id"].(float64))
+	workspace := call("GET", "/event-workspace?status=draft&sort=title&order=asc", nil, 200)
+	items := workspace["items"].([]any)
+	if len(items) != 1 || items[0].(map[string]any)["kind"] != "draft" || items[0].(map[string]any)["starts_at"] != nil {
+		t.Fatal(workspace)
+	}
+	if len(call("GET", "/event-workspace?starts_from="+time.Now().UTC().Format(time.RFC3339), nil, 200)["items"].([]any)) != 0 {
+		t.Fatal("undated draft included in date range")
+	}
+	call("GET", "/event-workspace?status=draft&status=active", nil, 400)
+	call("GET", "/event-workspace?sort=invalid", nil, 400)
+
 	call("PUT", fmt.Sprintf("/publications/%d", pub), map[string]any{"text": "Updated", "media_ids": []string{media}, "target_keys": []string{"test"}}, 200)
 	card := call("GET", fmt.Sprintf("/publications/%d", pub), nil, 200)
 	if card["text"] != "Updated" || len(card["media_ids"].([]any)) != 1 {
@@ -103,10 +148,30 @@ func TestAdminLifecyclePostgres(t *testing.T) {
 	call("POST", "/publications", map[string]any{"text": "Test", "target_keys": []string{"unknown"}}, 400)
 	event := call("POST", "/events", map[string]any{"publication_id": pub, "title": "Meeting", "starts_at": time.Now().Add(time.Hour), "ends_at": time.Now().Add(2 * time.Hour)}, 201)
 	eventID := int64(event["id"].(float64))
+	workspace = call("GET", "/event-workspace?search=Meeting", nil, 200)
+	if workspace["page"].(map[string]any)["total_items"] != float64(1) || workspace["items"].([]any)[0].(map[string]any)["kind"] != "draft" {
+		t.Fatal("duplicate draft/event", workspace)
+	}
+	if len(call("GET", "/event-workspace?status=active", nil, 200)["items"].([]any)) != 0 {
+		t.Fatal("draft shown as active")
+	}
+	if len(call("GET", "/event-workspace?page=2&page_size=10", nil, 200)["items"].([]any)) != 0 {
+		t.Fatal("workspace pagination")
+	}
+
 	call("GET", fmt.Sprintf("/events/%d", eventID), nil, 200)
 	call("GET", "/publications?status=draft&page_size=10", nil, 200)
 	call("GET", "/publications?sort=sql", nil, 400)
 	call("POST", fmt.Sprintf("/publications/%d/schedule", pub), map[string]any{}, 200)
+	workspace = call("GET", "/event-workspace?search=Meeting&status=active", nil, 200)
+	items = workspace["items"].([]any)
+	if len(items) != 1 || items[0].(map[string]any)["kind"] != "event" || items[0].(map[string]any)["id"] != float64(eventID) {
+		t.Fatal("scheduled draft did not become event", workspace)
+	}
+	if len(call("GET", "/event-workspace?status=draft", nil, 200)["items"].([]any)) != 0 {
+		t.Fatal("scheduled publication still shown as draft")
+	}
+
 	call("PUT", fmt.Sprintf("/publications/%d", pub), map[string]any{"text": "Too late"}, 409)
 	delivery, err := pubs.ClaimDue(ctx)
 	if err != nil || delivery == nil || len(delivery.MediaPaths) != 1 {
@@ -126,7 +191,11 @@ func TestAdminLifecyclePostgres(t *testing.T) {
 	if err = pool.QueryRow(ctx, "INSERT INTO feedback(person_id,text) VALUES($1,'General feedback') RETURNING id", person).Scan(&feedback); err != nil {
 		t.Fatal(err)
 	}
-	call("GET", "/feedback?kind=general", nil, 200)
+	feedbackPage := call("GET", "/feedback?kind=general", nil, 200)
+	feedbackItem := feedbackPage["items"].([]any)[0].(map[string]any)
+	if feedbackItem["author_name"] != "Participant" || feedbackItem["event_title"] != nil {
+		t.Fatal(feedbackItem)
+	}
 	call("GET", fmt.Sprintf("/feedback/%d", feedback), nil, 200)
 	if _, err = pool.Exec(ctx, `CREATE FUNCTION reject_notification() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test failure'; END $$; CREATE TRIGGER reject_notification BEFORE INSERT ON outbox FOR EACH ROW EXECUTE FUNCTION reject_notification()`); err != nil {
 		t.Fatal(err)
@@ -178,6 +247,80 @@ func TestAdminLifecyclePostgres(t *testing.T) {
 	p, _, err := pubs.Publication(ctx, first)
 	if err != nil || p["text"] != "Original" {
 		t.Fatalf("retry mutated: %v %v", p, err)
+	}
+	// Bot draft to miniapp configuration preserves content.
+	{
+		original := map[string]any{"creator_id": 123, "text": "Original 😀 content", "entities": []map[string]any{{"type": "bold", "offset": 0, "length": 8}}, "rich_message": map[string]any{"blocks": []any{map[string]any{"type": "heading", "text": "Original heading"}}}, "media_paths": []string{filepath.Join(os.Getenv("ADMIN_MEDIA_DIR"), media)}}
+		encoded, _ := json.Marshal(original)
+		res := httptest.NewRecorder()
+		bot.ServeHTTP(res, httptest.NewRequest("POST", "/internal/bot/v1/publications", bytes.NewReader(encoded)))
+		if res.Code != 201 {
+			t.Fatal(res.Body.String())
+		}
+		var result map[string]any
+		_ = json.Unmarshal(res.Body.Bytes(), &result)
+		id := int64(result["id"].(float64))
+		path := fmt.Sprintf("/publications/%d", id)
+		before := call("GET", path, nil, 200)
+		if _, leaked := before["media_paths"]; leaked {
+			t.Fatal("filesystem paths leaked")
+		}
+		imageResponse := httptest.NewRecorder()
+		router.ServeHTTP(imageResponse, httptest.NewRequest("GET", "/api/v1/admin"+path+"/media/0", nil))
+		if imageResponse.Code != 200 || !bytes.Equal(imageResponse.Body.Bytes(), img.Bytes()) {
+			t.Fatal("preview image missing")
+		}
+		call("GET", path+"/media/-1", nil, 400)
+		call("GET", path+"/media/99", nil, 404)
+		start := time.Now().Add(2 * time.Hour)
+		end := start.Add(time.Hour)
+		settings := map[string]any{"target_keys": []string{"test"}, "event": map[string]any{"title": "From bot", "starts_at": start, "ends_at": end}}
+		after := call("PUT", path+"/settings", settings, 200)
+		call("PUT", path+"/settings", settings, 200) // retry updates same event
+		for _, key := range []string{"text", "entities", "rich_message", "media", "source"} {
+			a, _ := json.Marshal(before[key])
+			b, _ := json.Marshal(after[key])
+			if !bytes.Equal(a, b) {
+				t.Fatalf("changed %s", key)
+			}
+		}
+		call("PUT", path+"/settings", map[string]any{"text": "overwrite", "target_keys": []string{"test"}}, 400)
+		call("PUT", path+"/settings", map[string]any{"target_keys": []string{"unknown"}}, 400)
+		call("PUT", path+"/settings", map[string]any{"target_keys": []string{"test", "test"}}, 400)
+		var linked int
+		var configuredID int64
+		if err := pool.QueryRow(ctx, "SELECT count(*),min(event_id) FROM event_publication_references WHERE external_publication_id=$1", fmt.Sprint(id)).Scan(&linked, &configuredID); err != nil || linked != 1 {
+			t.Fatalf("links=%d err=%v", linked, err)
+		}
+		// Failure after event changes must roll back both event and destinations.
+		if _, err := pool.Exec(ctx, `CREATE FUNCTION reject_target_change() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test rollback'; END $$; CREATE TRIGGER reject_target_change BEFORE INSERT ON publication_deliveries FOR EACH ROW EXECUTE FUNCTION reject_target_change()`); err != nil {
+			t.Fatal(err)
+		}
+		settings["event"].(map[string]any)["title"] = "Must roll back"
+		call("PUT", path+"/settings", settings, 500)
+		if _, err := pool.Exec(ctx, "DROP TRIGGER reject_target_change ON publication_deliveries; DROP FUNCTION reject_target_change()"); err != nil {
+			t.Fatal(err)
+		}
+		restored := call("GET", path, nil, 200)
+		if restored["event"].(map[string]any)["title"] != "From bot" || len(restored["deliveries"].([]any)) != 1 {
+			t.Fatal(restored)
+		}
+		call("POST", path+"/schedule", map[string]any{"scheduled_at": start}, 409)
+		if ok, err := pubs.Schedule(ctx, id, end); err != nil || ok {
+			t.Fatalf("bot accepted late schedule: %v %v", ok, err)
+		}
+		call("POST", path+"/schedule", map[string]any{}, 200)
+		call("PUT", path+"/settings", settings, 409)
+		call("POST", fmt.Sprintf("/events/%d/cancel", configuredID), nil, 200)
+		// A stored path outside the approved media roots must never be served.
+		outside := filepath.Join(t.TempDir(), "private.png")
+		if err := os.WriteFile(outside, img.Bytes(), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, "UPDATE publication_media SET path=$2 WHERE publication_id=$1", id, outside); err != nil {
+			t.Fatal(err)
+		}
+		call("GET", path+"/media/0", nil, 404)
 	}
 	for i := 0; i < 6; i++ {
 		pid, err := pubs.CreateDraft(ctx, domain.Draft{CreatorTelegramID: 123, Text: "Capacity"})

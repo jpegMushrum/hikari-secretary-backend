@@ -46,21 +46,16 @@ Python-бот направляет в этот сервис профили, ме
 
 ## Быстрый старт для разработки
 
-```bash
-cp .env.example .env
-docker compose up --build
+Compose-файлы находятся в корне интеграционного репозитория. Из корня:
+
+```sh
+docker compose -f docker-compose.bot-local.yml up -d --build backend
 ```
 
-После запуска:
-
-```bash
-curl http://127.0.0.1:8080/healthz
-curl http://127.0.0.1:8080/readyz
-```
-
-Порты по умолчанию привязаны только к `127.0.0.1`, поэтому база и API не
-становятся общедоступными. В интеграционном production Compose доступ к Mini
-App будет организован через отдельный HTTPS reverse proxy на `8443`.
+Запускаются PostgreSQL, миграции и backend. База локального стенда должна
+быть подготовлена заранее; `LOCAL_DATABASE_NAME` выбирает её имя.
+API остаётся во внутренней сети Docker. Для работы через браузер запустите
+miniapp тем же файлом. Отдельного Compose в backend больше нет.
 
 ## Доступ Mini App
 
@@ -94,45 +89,21 @@ Backend проверяет HMAC-подпись Telegram и время `auth_date
 добавлены вместе с первым предметным API. До этого конфигурация остаётся
 единственным источником прав доступа.
 
-Для проверки конфигурации без рабочего `.env`:
+## Проверки и импорт
 
-```bash
-BACKEND_ENV_FILE=.env.example docker compose config --quiet
-```
+Из `backend/`:
 
-## Команды
-
-```bash
-docker compose up --build                 # база, мигратор и API
-docker compose logs -f api                # логи API
-docker compose down                       # остановка контейнеров
-docker compose down -v                    # удалить только локальный том PostgreSQL
+```sh
+go test ./...
+TEST_DATABASE_URL="postgres://..." go test -count=1 -tags=integration ./...
 go run ./cmd/import-legacy --sqlite ../data/bot.sqlite3 --json
-go run ./cmd/import-legacy --sqlite ../data/bot.sqlite3 --apply \
-  --database-url "$DATABASE_URL"
-docker compose run --rm --no-deps \
-  -v "$(pwd)/../data:/legacy:ro" --entrypoint /app/import-legacy api \
-  --sqlite /legacy/bot.sqlite3 --apply \
-  --database-url "postgres://hikari:<password>@database:5432/hikari?sslmode=disable"
-docker run --rm --mount type=bind,src="$(pwd)",dst=/src,readonly \
-  -w /src golang:1.27.3-alpine go test ./... # тесты в контейнере
-# Сначала примените миграции к локальной test/dev БД: docker compose up --build migrate
-TEST_DATABASE_URL="postgres://..." go test -count=1 -tags=integration ./internal/platform/migrations ./internal/adapters/botapi
 ```
 
-Перед переключением бота сначала выполните dry-run, остановите его, сделайте
-резервную копию `data/bot.sqlite3`, затем повторите команду с `--apply`.
-Импортёр переносит исторические профили, мероприятия, регистрации,
-посещаемость и отзывы; повторный запуск идемпотентен.
-
-Последняя команда не использует работающую базу: тесты текущего этапа покрывают
-конфигурацию, проверку Telegram-подписи, роли, сервисную авторизацию и HTTP
-endpoints.
-
-`import-legacy` без `--apply` выполняет только read-only dry-run. `--apply`
-повторно запускает dry-run перед одной транзакцией PostgreSQL и использует
-`legacy_import_map`, поэтому повторный запуск не создаёт дубликаты. Запускайте
-его после остановки бота и резервного копирования SQLite.
+Интеграционные тесты требуют PostgreSQL и создают временные схемы.
+Перенос серверного SQLite выполняется production-стеком по инструкции
+`docs/production.md` интеграционного репозитория. Сначала остановите старого
+бота и сохраните резервную копию; одноразовый снимок и импорт сохраняют
+исходные данные. После перехода новые записи хранятся только в PostgreSQL.
 
 ## Структура
 

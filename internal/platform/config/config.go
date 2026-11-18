@@ -36,15 +36,23 @@ type AIConfig struct {
 	Target                                                    Target
 }
 
-func Load() (Config, error) {
+// LoadDatabaseURL loads only the connection settings needed by database tools.
+func LoadDatabaseURL() (string, error) {
 	databaseURL := strings.TrimSpace(os.Getenv("DATABASE_URL"))
 	if databaseURL == "" {
-		return Config{}, fmt.Errorf("DATABASE_URL is required")
+		return "", fmt.Errorf("DATABASE_URL is required")
 	}
-
 	parsedURL, err := url.Parse(databaseURL)
 	if err != nil || (parsedURL.Scheme != "postgres" && parsedURL.Scheme != "postgresql") || parsedURL.Host == "" {
-		return Config{}, fmt.Errorf("DATABASE_URL must be a valid PostgreSQL connection URL")
+		return "", fmt.Errorf("DATABASE_URL must be a valid PostgreSQL connection URL")
+	}
+	return databaseURL, nil
+}
+
+func Load() (Config, error) {
+	databaseURL, err := LoadDatabaseURL()
+	if err != nil {
+		return Config{}, err
 	}
 
 	shutdownTimeout, err := time.ParseDuration(valueOrDefault("SHUTDOWN_TIMEOUT", "10s"))

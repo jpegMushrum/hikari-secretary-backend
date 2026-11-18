@@ -13,14 +13,14 @@ import (
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
-	cfg, err := config.Load()
+	databaseURL, err := config.LoadDatabaseURL()
 	if err != nil {
 		logger.Error("invalid configuration", "error", err)
 		os.Exit(1)
 	}
 
 	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, cfg.DatabaseURL)
+	conn, err := pgx.Connect(ctx, databaseURL)
 	if err != nil {
 		logger.Error("database connection failed", "error", err)
 		os.Exit(1)

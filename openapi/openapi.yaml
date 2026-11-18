@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hikari Secretary Backend API
-  version: 0.3.0-dev
+  version: 0.3.0
   description: |
     Внутренний API платформы Hikari Secretary. Административные предметные
     endpoints требуют проверенные Telegram Mini App credentials и роль

@@ -1,6 +1,6 @@
 # Hikari Secretary Backend
 
-![Версия](https://img.shields.io/badge/version-v0.3.0--dev-6A5ACD)
+![Версия](https://img.shields.io/badge/version-v0.3.0-6A5ACD)
 ![Go](https://img.shields.io/badge/Go-1.27-00ADD8?logo=go&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-18-4169E1?logo=postgresql&logoColor=white)
 
@@ -19,7 +19,7 @@ Bot API сохраняет ответ-массив, но возвращает п
 Контракт: [OpenAPI](openapi/openapi.yaml). Порядок вызовов и ограничения:
 [Admin API](docs/admin-api.md).
 
-В `v0.3.0-dev` реализованы фундамент, контур доступа и первый предметный
+В `v0.3.0` реализованы фундамент, контур доступа и первый предметный
 срез людей:
 
 - конфигурация окружения и безопасное завершение HTTP-сервера;

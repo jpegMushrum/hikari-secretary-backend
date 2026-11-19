@@ -100,16 +100,20 @@ go run ./cmd/import-legacy --sqlite ../data/bot.sqlite3 --json
 ```
 
 Интеграционные тесты требуют PostgreSQL и создают временные схемы.
-Перенос серверного SQLite выполняется production-стеком по инструкции
-`docs/production.md` интеграционного репозитория. Сначала остановите старого
-бота и сохраните резервную копию; одноразовый снимок и импорт сохраняют
-исходные данные. После перехода новые записи хранятся только в PostgreSQL.
+Снимок и перенос серверного SQLite выполняются вручную в production-профиле
+`legacy-import`. Образ импортёра `hikari-secretary-import-legacy:local`
+собирается из `Dockerfile.import-legacy`. По умолчанию импортёр формирует
+отчёт dry-run; для записи используйте явный флаг `--apply` после проверки
+отчёта. Сначала остановите старого бота и сохраните резервную копию.
+После перехода новые записи хранятся только в PostgreSQL.
+Порядок команд описан в [инструкции production](https://github.com/jpegMushrum/hikari-secretary/blob/main/docs/production.md).
 
 ## Структура
 
 ```text
 cmd/api/                 # HTTP API
 cmd/migrate/             # применение SQL-миграций
+cmd/import-legacy/       # перенос SQLite в PostgreSQL
 internal/platform/       # конфигурация, PostgreSQL, мигратор и HTTP-инфраструктура
 migrations/              # упорядоченные SQL-миграции
 openapi/                 # версионируемый контракт API

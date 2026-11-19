@@ -1645,7 +1645,7 @@ paths:
                   sort:
                     type: object
                     properties:
-                      field: {type: string, const: scheduled_for}
+                      field: {type: string, enum: [id, title, scheduled_for, status, attempts]}
                       order: {type: string, enum: [asc, desc]}
                   filters:
                     type: object
@@ -1790,7 +1790,7 @@ components:
           properties:
             field:
               type: string
-              enum: [name, visits, last_visit]
+              enum: [id, name, visits, last_visit, feedback_count, is_russian_citizen, is_itmo_student]
             order:
               type: string
               enum: [asc, desc]

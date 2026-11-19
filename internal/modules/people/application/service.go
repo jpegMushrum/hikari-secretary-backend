@@ -11,9 +11,13 @@ import (
 type SortField string
 
 const (
-	SortByName      SortField = "name"
-	SortByVisits    SortField = "visits"
-	SortByLastVisit SortField = "last_visit"
+	SortByID            SortField = "id"
+	SortByFeedbackCount SortField = "feedback_count"
+	SortByCitizen       SortField = "is_russian_citizen"
+	SortByStudent       SortField = "is_itmo_student"
+	SortByName          SortField = "name"
+	SortByVisits        SortField = "visits"
+	SortByLastVisit     SortField = "last_visit"
 )
 
 type SortOrder string

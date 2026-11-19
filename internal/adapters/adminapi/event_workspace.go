@@ -77,7 +77,11 @@ func (h *Management) eventWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "internal_error")
 		return
 	}
-	sql := eventWorkspaceSQL + fmt.Sprintf("SELECT kind,id,publication_id,title,starts_at,ends_at,status,created_at,registrations,attended FROM workspace%s ORDER BY %s %s NULLS LAST,kind,id LIMIT $%d OFFSET $%d", where, q.Sort, q.Order, len(args)+1, len(args)+2)
+	sortColumn := string(q.Sort)
+	if q.Sort == "attended" {
+		sortColumn = "CASE WHEN status NOT IN ('active','draft') THEN attended END"
+	}
+	sql := eventWorkspaceSQL + fmt.Sprintf("SELECT kind,id,publication_id,title,starts_at,ends_at,status,created_at,registrations,attended FROM workspace%s ORDER BY %s %s NULLS LAST,kind,id LIMIT $%d OFFSET $%d", where, sortColumn, q.Order, len(args)+1, len(args)+2)
 	rows, err := h.Pool.Query(r.Context(), sql, append(args, q.Page.Size, q.Page.Offset())...)
 	if err != nil {
 		writeError(w, 500, "internal_error")

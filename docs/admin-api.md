@@ -30,7 +30,7 @@
 ## Просмотр и отмена
 
 - `GET /publications`: page, page_size (10/20/30), status, source, target,
-  from/to (период scheduled_at), sort (created_at/scheduled_at), order.
+  from/to (период scheduled_at), sort, order.
 - `GET /publications/{id}`: содержание, media_ids, доставки и мероприятие.
   Пути файлов не раскрываются. Старые медиа бота не имеют upload id.
 - `GET /events`, `GET /events/{id}`, `GET /events/{id}/participants`:
@@ -45,15 +45,36 @@
   ID автора, Telegram ID автора или ID отзыва. Точные фильтры `event_id`
   и `author_id` (внутренний ID человека) можно сочетать с поиском.
   Другие параметры списка: page, page_size, kind (general/event),
-  from/to (created_at), sort=created_at, order.
+  from/to (created_at), sort, order.
 - `GET /feedback/{id}`: полный текст, автор и мероприятие.
 
 Периоды включают from и исключают to; from должен быть раньше to.
 Поиск в `/events`, `/event-workspace`, `/people` и `/feedback` сопоставляет буквальные
 подстроки без учёта регистра, включая символы `%` и `_`.
-Сортировки завершаются стабильным id. Пустые списки — массивы, не null.
+Пустые списки — массивы, не null.
 Основные ошибки: 400 invalid_request, 401 unauthorized, 403 forbidden,
 404 not_found, 409 invalid_state/capacity_limit, 413 media_too_large.
+
+### Сортировка списков
+
+Сортировка применяется на сервере перед пагинацией. Параметр `order`
+принимает `asc` или `desc`. При равенстве значений сохраняется
+стабильный порядок по ID. В объединённом списке `/event-workspace`
+при равенстве сначала учитывается тип записи, затем ID.
+
+| Список | Допустимые значения `sort` |
+| --- | --- |
+| `/events`, `/event-workspace` | `id`, `title`, `starts_at`, `created_at`, `status`, `registrations`, `attended` |
+| `/events/{id}/participants` | `person_id`, `name`, `telegram`, `registered_at`, `cancelled_at`, `status`, `attended`, `needs_pass`, `is_russian_citizen`, `is_itmo_student` |
+| `/people` | `id`, `name`, `visits`, `last_visit`, `feedback_count`, `is_russian_citizen`, `is_itmo_student` |
+| `/publications` | `id`, `text`, `status`, `created_at`, `scheduled_at` |
+| `/feedback` | `id`, `text`, `event_title`, `author_name`, `created_at` |
+| `/ai/history` | `id`, `title`, `scheduled_for`, `status`, `attempts` |
+
+В списке участников встречи `telegram` сортирует по username без учёта
+регистра. Участники без username идут последними при обоих направлениях.
+В списке публикаций при сортировке по `scheduled_at` записи без даты
+идут последними при `asc` и первыми при `desc`.
 
 ## Медиа и deployment
 
@@ -110,7 +131,7 @@ ADMIN_MEDIA_DIR по умолчанию data/admin-media. Backend и бот до
   проверенным администратором, а не телом запроса. Настройки доступны без
   подключения провайдера и общие с ботом через learningcontent repository.
 - `GET /api/v1/admin/ai/history`: `page`, `page_size`, `status`,
-  `sort=scheduled_for`, `order=asc|desc` (по умолчанию desc). Возвращает
+  `sort` (по умолчанию scheduled_for), `order` (по умолчанию desc). Возвращает
   стандартный табличный envelope и задания со статусом, попытками,
   материалом, publication_id и последней ошибкой. Пустая страница — `[]`.
 
@@ -135,8 +156,8 @@ Bot API integration test также создаёт временную схему
 ### Единый список для страницы мероприятий
 
 `GET /api/v1/admin/event-workspace` объединяет мероприятия и черновики
-публикаций с общей серверной пагинацией, поиском по названию или ID записи и сортировкой
-`starts_at`, `title`, `created_at`. Фильтр `status` принимает `draft`,
+публикаций с общей серверной пагинацией, поиском по названию или ID записи
+и сортировкой. Фильтр `status` принимает `draft`,
 `active`, `completed`, `cancelled`. Поля `kind` и `id` различают сущности:
 `draft` открывается через `publication_id`, `event` через `id` мероприятия.
 Черновик можно найти и по ID публикации, и по ID связанного мероприятия.

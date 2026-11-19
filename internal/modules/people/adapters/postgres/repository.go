@@ -192,6 +192,14 @@ func peopleOrderClause(query application.ListPeopleQuery) string {
 	}
 
 	switch field {
+	case application.SortByID:
+		return "p.id " + direction
+	case application.SortByFeedbackCount:
+		return "COALESCE(fm.feedback_count, 0) " + direction + ", p.id " + direction
+	case application.SortByCitizen:
+		return "p.is_russian_citizen " + direction + " NULLS LAST, p.id " + direction
+	case application.SortByStudent:
+		return "p.is_itmo_student " + direction + " NULLS LAST, p.id " + direction
 	case application.SortByVisits:
 		return "COALESCE(am.visits, 0) " + direction + ", p.id " + direction
 	case application.SortByLastVisit:

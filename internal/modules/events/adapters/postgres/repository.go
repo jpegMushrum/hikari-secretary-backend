@@ -73,11 +73,19 @@ func eventOrder(q application.ListEventsQuery) string {
 		direction = "DESC"
 	}
 	field := "e.starts_at"
-	if q.Sort == application.SortByTitle {
+	switch q.Sort {
+	case application.SortByTitle:
 		field = "e.title"
-	}
-	if q.Sort == application.SortByCreatedAt {
+	case application.SortByCreatedAt:
 		field = "e.created_at"
+	case "id":
+		field = "e.id"
+	case "status":
+		field = eventStatusSQL("e")
+	case "registrations":
+		field = "COUNT(er.id) FILTER(WHERE er.status='registered')"
+	case "attended":
+		field = "COUNT(a.registration_id) FILTER(WHERE a.attended)"
 	}
 	return field + " " + direction + ",e.id " + direction
 }
@@ -139,13 +147,27 @@ func participantOrder(q application.ListParticipantsQuery) string {
 		direction = "DESC"
 	}
 	field := "COALESCE(p.full_name,ti.display_name)"
-	if q.Sort == application.ParticipantByRegisteredAt {
+	switch q.Sort {
+	case application.ParticipantByRegisteredAt:
 		field = "er.registered_at"
+	case "person_id":
+		field = "er.person_id"
+	case "telegram":
+		field = "LOWER(ti.username)"
+	case "cancelled_at":
+		field = "er.cancelled_at"
+	case "status":
+		field = "er.status"
+	case "attended":
+		field = "a.attended"
+	case "is_russian_citizen":
+		field = "p.is_russian_citizen"
+	case "is_itmo_student":
+		field = "p.is_itmo_student"
+	case application.ParticipantByNeedsPass:
+		field = "NOT (p.is_russian_citizen AND p.is_itmo_student)"
 	}
-	if q.Sort == application.ParticipantByNeedsPass {
-		field = "(NOT COALESCE(p.is_russian_citizen,FALSE) OR NOT COALESCE(p.is_itmo_student,FALSE))"
-	}
-	return field + " " + direction + ",er.person_id " + direction
+	return field + " " + direction + " NULLS LAST,er.person_id " + direction
 }
 func (r *Repository) Cancel(ctx context.Context, id, actor int64) (application.CancelResult, error) {
 	tx, err := r.pool.Begin(ctx)

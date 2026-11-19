@@ -182,6 +182,17 @@ func (h *Management) listPublications(w http.ResponseWriter, r *http.Request) {
 func (h *Management) listFeedback(w http.ResponseWriter, r *http.Request) {
 	h.list(w, r, true)
 }
+
+var publicationSortFields = map[string]string{
+	"id": "p.id", "text": "COALESCE(NULLIF(p.text,''),'Анонс #' || p.id::text)",
+	"status": "p.status", "created_at": "p.created_at", "scheduled_at": "p.scheduled_at",
+}
+
+var feedbackSortFields = map[string]string{
+	"id": "p.id", "text": "p.text", "event_title": "COALESCE(event.title,'О клубе в целом')",
+	"author_name": "author_name", "created_at": "p.created_at",
+}
+
 func (h *Management) list(w http.ResponseWriter, r *http.Request, feedback bool) {
 	values := r.URL.Query()
 	from, e1 := optionalTime(values, "from")
@@ -211,7 +222,12 @@ func (h *Management) list(w http.ResponseWriter, r *http.Request, feedback bool)
 	if sort == "" {
 		sort = "created_at"
 	}
-	if (!feedback && !allowed(sort, "created_at", "scheduled_at")) || (feedback && sort != "created_at") {
+	fieldsByKey := publicationSortFields
+	if feedback {
+		fieldsByKey = feedbackSortFields
+	}
+	sortExpr, ok := fieldsByKey[sort]
+	if !ok {
 		writeError(w, 400, "invalid_request")
 		return
 	}
@@ -312,7 +328,7 @@ func (h *Management) list(w http.ResponseWriter, r *http.Request, feedback bool)
 		managementError(w, err)
 		return
 	}
-	query := fmt.Sprintf("SELECT %s FROM %s%s ORDER BY p.%s %s,p.id %s LIMIT $%d OFFSET $%d", fields, table, where, sort, order, order, len(args)+1, len(args)+2)
+	query := fmt.Sprintf("SELECT %s FROM %s%s ORDER BY %s %s,p.id %s LIMIT $%d OFFSET $%d", fields, table, where, sortExpr, order, order, len(args)+1, len(args)+2)
 	items, err := h.queryRows(r, query, append(args, page.Size, page.Offset())...)
 	if err != nil {
 		managementError(w, err)

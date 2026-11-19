@@ -135,7 +135,7 @@ func parseEventsQuery(values url.Values) (events.ListEventsQuery, error) {
 	if sortRaw == "" {
 		sortRaw = "starts_at"
 	}
-	if !allowed(sortRaw, "starts_at", "title", "created_at") {
+	if !allowed(sortRaw, "starts_at", "title", "created_at", "id", "status", "registrations", "attended") {
 		return events.ListEventsQuery{}, errors.New("sort")
 	}
 	orderRaw, err := one(values, "order")
@@ -174,7 +174,7 @@ func parseParticipantsQuery(values url.Values) (events.ListParticipantsQuery, er
 	if sortRaw == "" {
 		sortRaw = "name"
 	}
-	if !allowed(sortRaw, "name", "registered_at", "needs_pass") {
+	if !allowed(sortRaw, "name", "registered_at", "needs_pass", "person_id", "telegram", "cancelled_at", "status", "attended", "is_russian_citizen", "is_itmo_student") {
 		return events.ListParticipantsQuery{}, errors.New("sort")
 	}
 	orderRaw, err := one(values, "order")

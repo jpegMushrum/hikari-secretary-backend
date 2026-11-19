@@ -206,7 +206,8 @@ func parsePeopleSort(values url.Values) (application.SortField, error) {
 
 	sort := application.SortField(raw)
 	switch sort {
-	case application.SortByName, application.SortByVisits, application.SortByLastVisit:
+	case application.SortByName, application.SortByVisits, application.SortByLastVisit,
+		application.SortByID, application.SortByFeedbackCount, application.SortByCitizen, application.SortByStudent:
 		return sort, nil
 	default:
 		return "", errors.New("unsupported sort")

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hikari Secretary Backend API
-  version: 0.3.1
+  version: 0.3.2
   description: |
     Внутренний API платформы Hikari Secretary. Административные предметные
     endpoints требуют проверенные Telegram Mini App credentials и роль
@@ -87,7 +87,7 @@ paths:
           in: query
           schema:
             type: string
-            enum: [name, visits, last_visit]
+            enum: [id, name, visits, last_visit, feedback_count, is_russian_citizen, is_itmo_student]
             default: name
         - name: order
           in: query
@@ -180,7 +180,7 @@ paths:
           schema: {type: string, format: date-time}
         - name: sort
           in: query
-          schema: {type: string, enum: [starts_at, title, created_at], default: starts_at}
+          schema: {type: string, enum: [id, title, starts_at, created_at, status, registrations, attended], default: starts_at}
         - name: order
           in: query
           schema: {type: string, enum: [asc, desc], default: asc}
@@ -337,7 +337,7 @@ paths:
           in: query
           schema:
             type: string
-            enum: [starts_at, title, created_at]
+            enum: [id, title, starts_at, created_at, status, registrations, attended]
             default: starts_at
         - name: order
           in: query
@@ -412,7 +412,7 @@ paths:
           in: query
           schema:
             type: string
-            enum: [name, registered_at, needs_pass]
+            enum: [person_id, name, telegram, registered_at, cancelled_at, status, attended, needs_pass, is_russian_citizen, is_itmo_student]
             default: name
         - name: order
           in: query
@@ -489,6 +489,9 @@ paths:
           "schema":
             "type": "string"
             "enum":
+              - "id"
+              - "text"
+              - "status"
               - "created_at"
               - "scheduled_at"
         -
@@ -1155,6 +1158,10 @@ paths:
           "schema":
             "type": "string"
             "enum":
+              - "id"
+              - "text"
+              - "event_title"
+              - "author_name"
               - "created_at"
         -
           "name": "event_id"
@@ -1618,13 +1625,13 @@ paths:
           schema: {type: string, enum: [pending, retry, generating, scheduled, failed, cancelled]}
         - name: sort
           in: query
-          schema: {type: string, enum: [scheduled_for], default: scheduled_for}
+          schema: {type: string, enum: [id, title, scheduled_for, status, attempts], default: scheduled_for}
         - name: order
           in: query
           schema: {type: string, enum: [asc, desc], default: desc}
       responses:
         '200':
-          description: Задания, включая незавершённые; стабильная сортировка по scheduled_for и id
+          description: Задания, включая незавершённые, со стабильной сортировкой
           content:
             application/json:
               schema:

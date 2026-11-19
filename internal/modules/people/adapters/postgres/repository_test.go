@@ -19,7 +19,7 @@ func TestPeopleWhereClauseUsesNumberedParametersForEveryFilter(t *testing.T) {
 
 	for _, expected := range []string{
 		"p.full_name ILIKE $1",
-		"ti.username ILIKE $1",
+		"('@' || ti.username) ILIKE $1",
 		"ti.display_name ILIKE $1",
 		"p.is_russian_citizen = $2",
 		"p.is_itmo_student = $3",

@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/people/application"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/people/domain"
+	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/database"
 )
 
 type Repository struct {
@@ -152,9 +153,11 @@ func peopleWhereClause(query application.ListPeopleQuery) (string, []any) {
 	if search := strings.TrimSpace(query.Search); search != "" {
 		add(`(
 			p.full_name ILIKE $%[1]d
-			OR ti.username ILIKE $%[1]d
+			OR ('@' || ti.username) ILIKE $%[1]d
 			OR ti.display_name ILIKE $%[1]d
-		)`, "%"+search+"%")
+			OR p.id::text LIKE $%[1]d
+			OR ti.telegram_user_id::text LIKE $%[1]d
+		)`, database.ContainsPattern(search))
 	}
 	if query.IsRussianCitizen != nil {
 		add("p.is_russian_citizen = $%d", *query.IsRussianCitizen)

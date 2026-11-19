@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	publishing "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/application"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/domain"
+	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/database"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/pagination"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/requestcontext"
 )
@@ -225,6 +226,18 @@ func (h *Management) list(w http.ResponseWriter, r *http.Request, feedback bool)
 	if feedback {
 		table = "feedback p JOIN people author ON author.id=p.person_id LEFT JOIN telegram_identities ti ON ti.person_id=author.id LEFT JOIN events event ON event.id=p.event_id"
 		fields = "p.id,p.person_id,p.event_id,p.text,p.created_at,COALESCE(author.full_name,ti.display_name,'Участник') AS author_name,event.title AS event_title"
+		search, err := one(values, "search")
+		if err != nil {
+			writeError(w, 400, "invalid_request")
+			return
+		}
+		if term := strings.TrimSpace(search); term != "" {
+			filters["search"] = term
+			add(`(event.title ILIKE $%[1]d OR p.event_id::text LIKE $%[1]d
+				OR author.full_name ILIKE $%[1]d OR ti.display_name ILIKE $%[1]d
+				OR ('@' || ti.username) ILIKE $%[1]d OR ti.telegram_user_id::text LIKE $%[1]d
+				OR p.person_id::text LIKE $%[1]d OR p.id::text LIKE $%[1]d)`, database.ContainsPattern(term))
+		}
 	}
 	for _, key := range []string{"status", "source", "target", "event_id", "author_id", "kind", "from", "to"} {
 		raw, e := one(values, key)

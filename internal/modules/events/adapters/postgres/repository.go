@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/events/application"
+	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/database"
 )
 
 type Repository struct{ pool *pgxpool.Pool }
@@ -53,7 +54,7 @@ func eventWhere(q application.ListEventsQuery) (string, []any) {
 		add(eventStatusSQL("e")+"=$%d", q.Status)
 	}
 	if value := strings.TrimSpace(q.Search); value != "" {
-		add("e.title ILIKE $%d", "%"+value+"%")
+		add("(e.title ILIKE $%[1]d OR e.id::text LIKE $%[1]d)", database.ContainsPattern(value))
 	}
 	if q.StartsFrom != nil {
 		add("e.starts_at>=$%d", *q.StartsFrom)

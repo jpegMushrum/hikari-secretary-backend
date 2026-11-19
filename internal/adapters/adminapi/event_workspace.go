@@ -5,12 +5,14 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/database"
 )
 
 // The workspace is a read model: drafts are publications, not synthetic events.
 // Filtering and pagination apply to the entire union, never to separate client lists.
 const eventWorkspaceSQL = `WITH workspace AS (
- SELECT 'event'::text kind,e.id,r.external_publication_id::bigint publication_id,e.title,e.starts_at,e.ends_at,
+ SELECT 'event'::text kind,e.id,NULL::bigint draft_event_id,r.external_publication_id::bigint publication_id,e.title,e.starts_at,e.ends_at,
  CASE WHEN e.status='active' AND e.ends_at<=NOW() THEN 'completed' ELSE e.status END status,
  e.created_at,
  (SELECT COUNT(*) FROM event_registrations er WHERE er.event_id=e.id AND er.status='registered') registrations,
@@ -18,7 +20,7 @@ const eventWorkspaceSQL = `WITH workspace AS (
  FROM events e LEFT JOIN event_publication_references r ON r.event_id=e.id
  WHERE NOT EXISTS(SELECT 1 FROM publications p WHERE p.id::text=r.external_publication_id AND r.provider='hikari_publishing' AND p.status='draft')
  UNION ALL
- SELECT 'draft',p.id,p.id,COALESCE(e.title,NULLIF(split_part(p.text,E'\n',1),''),'Черновик #'||p.id),e.starts_at,e.ends_at,'draft',p.created_at,0,0
+ SELECT 'draft',p.id,e.id,p.id,COALESCE(e.title,NULLIF(split_part(p.text,E'\n',1),''),'Черновик #'||p.id),e.starts_at,e.ends_at,'draft',p.created_at,0,0
  FROM publications p LEFT JOIN event_publication_references r ON r.provider='hikari_publishing' AND r.external_publication_id=p.id::text
  LEFT JOIN events e ON e.id=r.event_id WHERE p.status='draft'
  ) `
@@ -61,7 +63,7 @@ func (h *Management) eventWorkspace(w http.ResponseWriter, r *http.Request) {
 		add("status=$%d", status)
 	}
 	if q.Search != "" {
-		add("title ILIKE $%d", "%"+q.Search+"%")
+		add("(title ILIKE $%[1]d OR id::text LIKE $%[1]d OR draft_event_id::text LIKE $%[1]d)", database.ContainsPattern(q.Search))
 	}
 	if q.StartsFrom != nil {
 		add("starts_at >= $%d", *q.StartsFrom)

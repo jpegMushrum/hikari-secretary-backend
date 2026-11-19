@@ -12,10 +12,13 @@ import (
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/adapters/botapi"
 	ep "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/events/adapters/postgres"
 	ea "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/events/application"
+	peoplepg "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/people/adapters/postgres"
+	people "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/people/application"
 	pp "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/adapters/postgres"
 	pa "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/application"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/domain"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/migrations"
+	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/pagination"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/requestcontext"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/telegramauth"
 	"image"
@@ -146,8 +149,18 @@ func TestAdminLifecyclePostgres(t *testing.T) {
 	}
 	call("POST", "/publications", map[string]any{"text": "Test", "media_ids": []string{"../../secret"}}, 400)
 	call("POST", "/publications", map[string]any{"text": "Test", "target_keys": []string{"unknown"}}, 400)
+	// Give the event and its draft visibly different IDs in this isolated schema.
+	if _, err := pool.Exec(ctx, "ALTER TABLE events ALTER COLUMN id RESTART WITH 987"); err != nil {
+		t.Fatal(err)
+	}
 	event := call("POST", "/events", map[string]any{"publication_id": pub, "title": "Meeting", "starts_at": time.Now().Add(time.Hour), "ends_at": time.Now().Add(2 * time.Hour)}, 201)
 	eventID := int64(event["id"].(float64))
+	for _, searchID := range []int64{eventID, pub} {
+		page := call("GET", fmt.Sprintf("/event-workspace?status=draft&search=%d", searchID), nil, 200)
+		if rows := page["items"].([]any); len(rows) != 1 || rows[0].(map[string]any)["id"] != float64(pub) {
+			t.Fatalf("draft search by %d: %v", searchID, page)
+		}
+	}
 	workspace = call("GET", "/event-workspace?search=Meeting", nil, 200)
 	if workspace["page"].(map[string]any)["total_items"] != float64(1) || workspace["items"].([]any)[0].(map[string]any)["kind"] != "draft" {
 		t.Fatal("duplicate draft/event", workspace)
@@ -171,6 +184,12 @@ func TestAdminLifecyclePostgres(t *testing.T) {
 	if len(call("GET", "/event-workspace?status=draft", nil, 200)["items"].([]any)) != 0 {
 		t.Fatal("scheduled publication still shown as draft")
 	}
+	for _, path := range []string{"/events", "/event-workspace"} {
+		page := call("GET", fmt.Sprintf("%s?search=%d", path, eventID), nil, 200)
+		if rows := page["items"].([]any); len(rows) != 1 || rows[0].(map[string]any)["id"] != float64(eventID) {
+			t.Fatalf("search by ID on %s: %v", path, page)
+		}
+	}
 
 	call("PUT", fmt.Sprintf("/publications/%d", pub), map[string]any{"text": "Too late"}, 409)
 	delivery, err := pubs.ClaimDue(ctx)
@@ -181,8 +200,22 @@ func TestAdminLifecyclePostgres(t *testing.T) {
 	if err = pool.QueryRow(ctx, "INSERT INTO people(full_name) VALUES('Participant') RETURNING id").Scan(&person); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = pool.Exec(ctx, "INSERT INTO telegram_identities(person_id,telegram_user_id,display_name,last_seen_at) VALUES($1,456,'Participant',NOW())", person); err != nil {
+	if _, err = pool.Exec(ctx, "INSERT INTO telegram_identities(person_id,telegram_user_id,username,display_name,last_seen_at) VALUES($1,456,'club_member','Screen Name',NOW())", person); err != nil {
 		t.Fatal(err)
+	}
+	repo := peoplepg.NewRepository(pool)
+	for _, term := range []string{"ticip", "screen", "CLUB_MEMBER", "@club_member", fmt.Sprint(person), "456", "club%member"} {
+		result, err := repo.ListPeople(ctx, people.ListPeopleQuery{Search: term, Page: pagination.Page{Number: 1, Size: 10}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if term == "club%member" {
+			if result.TotalItems != 0 {
+				t.Fatal("search treated literal % as wildcard")
+			}
+		} else if result.TotalItems != 1 || len(result.Items) != 1 || result.Items[0].ID != person {
+			t.Errorf("search %q: %+v", term, result)
+		}
 	}
 	if _, err = pool.Exec(ctx, "INSERT INTO event_registrations(event_id,person_id,registered_at) VALUES($1,$2,NOW())", eventID, person); err != nil {
 		t.Fatal(err)
@@ -197,6 +230,33 @@ func TestAdminLifecyclePostgres(t *testing.T) {
 		t.Fatal(feedbackItem)
 	}
 	call("GET", fmt.Sprintf("/feedback/%d", feedback), nil, 200)
+	var eventFeedback int64
+	if err := pool.QueryRow(ctx, "INSERT INTO feedback(person_id,event_id,text) VALUES($1,$2,'Meeting feedback') RETURNING id", person, eventID).Scan(&eventFeedback); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		query string
+		total int
+	}{
+		{"search=mEEting", 1},
+		{fmt.Sprintf("search=%d", eventID), 1},
+		{fmt.Sprintf("search=%d", eventFeedback), 1},
+		{"search=@CLUB_MEMBER", 2},
+		{"search=club_member", 2},
+		{"search=456", 2},
+		{"search=ticip", 2},
+		{"search=screen", 2},
+		{fmt.Sprintf("search=%d", person), 2},
+		{fmt.Sprintf("search=456&event_id=%d&author_id=%d", eventID, person), 1},
+		{"search=meeting&kind=general", 0},
+		{"search=0", 0},
+		{"search=%25", 0},
+	} {
+		page := call("GET", "/feedback?"+tc.query, nil, 200)
+		if len(page["items"].([]any)) != tc.total || page["page"].(map[string]any)["total_items"] != float64(tc.total) {
+			t.Errorf("feedback filter %q: %v", tc.query, page)
+		}
+	}
 	if _, err = pool.Exec(ctx, `CREATE FUNCTION reject_notification() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test failure'; END $$; CREATE TRIGGER reject_notification BEFORE INSERT ON outbox FOR EACH ROW EXECUTE FUNCTION reject_notification()`); err != nil {
 		t.Fatal(err)
 	}

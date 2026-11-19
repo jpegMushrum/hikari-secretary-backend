@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hikari Secretary Backend API
-  version: 0.3.0
+  version: 0.3.1
   description: |
     Внутренний API платформы Hikari Secretary. Административные предметные
     endpoints требуют проверенные Telegram Mini App credentials и роль
@@ -69,7 +69,9 @@ paths:
         - $ref: '#/components/parameters/PageSize'
         - name: search
           in: query
-          description: Поиск по ФИО, Telegram username или отображаемому имени.
+          description: >-
+            Поиск буквальной подстроки без учёта регистра в ФИО, отображаемом
+            имени, Telegram username (с @ или без), внутреннем ID или Telegram ID.
           schema:
             type: string
             maxLength: 100
@@ -166,6 +168,9 @@ paths:
           schema: {type: string, enum: [draft, active, completed, cancelled]}
         - name: search
           in: query
+          description: >-
+            Поиск буквальной подстроки без учёта регистра в названии или ID записи.
+            Черновик можно найти по ID публикации или ID связанного мероприятия.
           schema: {type: string, maxLength: 100}
         - name: starts_from
           in: query
@@ -313,6 +318,8 @@ paths:
             enum: [active, cancelled, completed]
         - name: search
           in: query
+          description: >-
+            Поиск буквальной подстроки без учёта регистра в названии или ID мероприятия.
           schema:
             type: string
             maxLength: 100
@@ -1111,6 +1118,16 @@ paths:
           "$ref": "#/components/parameters/Page"
         -
           "$ref": "#/components/parameters/PageSize"
+        -
+          "name": "search"
+          "in": "query"
+          "description": >-
+            Поиск буквальной подстроки без учёта регистра в названии или ID
+            мероприятия, ФИО, отображаемом имени, Telegram username (с @ или без),
+            внутреннем или Telegram ID автора либо ID отзыва.
+            Сочетается с точными фильтрами event_id и author_id.
+          "schema":
+            "type": "string"
         -
           "name": "order"
           "in": "query"

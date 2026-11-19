@@ -17,6 +17,7 @@ func TestManagementRejectsInvalidRequestsBeforeDatabase(t *testing.T) {
 		{"GET", "/media/not-an-id", ""},
 		{"GET", "/publications?sort=drop_table", ""},
 		{"GET", "/feedback?event_id=-1", ""},
+		{"GET", "/feedback?search=a&search=b", ""},
 		{"GET", "/feedback?kind=unknown", ""},
 		{"GET", "/publications?status=draft&status=sent", ""},
 	} {

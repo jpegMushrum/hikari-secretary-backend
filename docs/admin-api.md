@@ -35,13 +35,22 @@
   Пути файлов не раскрываются. Старые медиа бота не имеют upload id.
 - `GET /events`, `GET /events/{id}`, `GET /events/{id}/participants`:
   существующие таблицы, статистика и фильтры из OpenAPI.
+- `GET /events` поддерживает `search` по названию или ID мероприятия.
+- `GET /people` поддерживает `search` по ФИО, отображаемому имени, Telegram
+  username (с `@` или без), внутреннему ID или Telegram ID.
 - `POST /events/{id}/cancel`: атомарно отменяет мероприятие и записывает
   уведомления в outbox и аудит. Повтор возвращает 409 без дублей уведомлений.
-- `GET /feedback`: page, page_size, event_id, author_id (ID человека),
-  kind (general/event), from/to (created_at), sort=created_at, order.
+- `GET /feedback` поддерживает `search` по названию или ID мероприятия,
+  ФИО, отображаемому имени, Telegram username (с `@` или без), внутреннему
+  ID автора, Telegram ID автора или ID отзыва. Точные фильтры `event_id`
+  и `author_id` (внутренний ID человека) можно сочетать с поиском.
+  Другие параметры списка: page, page_size, kind (general/event),
+  from/to (created_at), sort=created_at, order.
 - `GET /feedback/{id}`: полный текст, автор и мероприятие.
 
 Периоды включают from и исключают to; from должен быть раньше to.
+Поиск в `/events`, `/event-workspace`, `/people` и `/feedback` сопоставляет буквальные
+подстроки без учёта регистра, включая символы `%` и `_`.
 Сортировки завершаются стабильным id. Пустые списки — массивы, не null.
 Основные ошибки: 400 invalid_request, 401 unauthorized, 403 forbidden,
 404 not_found, 409 invalid_state/capacity_limit, 413 media_too_large.
@@ -126,11 +135,11 @@ Bot API integration test также создаёт временную схему
 ### Единый список для страницы мероприятий
 
 `GET /api/v1/admin/event-workspace` объединяет мероприятия и черновики
-публикаций с общей серверной пагинацией, поиском по названию и сортировкой
+публикаций с общей серверной пагинацией, поиском по названию или ID записи и сортировкой
 `starts_at`, `title`, `created_at`. Фильтр `status` принимает `draft`,
 `active`, `completed`, `cancelled`. Поля `kind` и `id` различают сущности:
 `draft` открывается через `publication_id`, `event` через `id` мероприятия.
+Черновик можно найти и по ID публикации, и по ID связанного мероприятия.
 Связанное с черновиком мероприятие не дублируется. У черновиков без
 мероприятия даты равны null; фильтр периода их исключает. После постановки
 анонса в очередь связанное мероприятие возвращается как `event`.
-Предметный `/events` сохраняет прежний контракт.

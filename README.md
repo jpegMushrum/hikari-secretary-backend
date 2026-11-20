@@ -1,6 +1,6 @@
 # Hikari Secretary Backend
 
-![Версия](https://img.shields.io/badge/version-v0.3.2-6A5ACD)
+![Версия](https://img.shields.io/badge/version-v0.3.3-6A5ACD)
 ![Go](https://img.shields.io/badge/Go-1.27-00ADD8?logo=go&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-18-4169E1?logo=postgresql&logoColor=white)
 
@@ -17,7 +17,9 @@ Bot API сохраняет ответ-массив, но возвращает п
 
 Admin API обслуживает мероприятия и регистрации, участников, публикации и
 медиа, отзывы, настройки и историю ИИ. Основные списки поддерживают серверную
-пагинацию, фильтрацию и сортировку. См. [OpenAPI](openapi/openapi.yaml) и
+пагинацию, фильтрацию и сортировку. История ИИ показывает текущий статус
+связанной публикации, поддерживает сортировку по этому статусу и позволяет
+получить отдельное задание по ID. См. [OpenAPI](openapi/openapi.yaml) и
 [руководство по Admin API](docs/admin-api.md).
 
 Python-бот направляет в этот сервис профили, мероприятия, регистрации,

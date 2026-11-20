@@ -83,7 +83,7 @@ func TestAdminListColumnSortPostgres(t *testing.T) {
 		{"publications", "created_at", 1}, {"publications", "scheduled_at", 2},
 		{"feedback", "id", 1}, {"feedback", "text", 2}, {"feedback", "event_title", 2},
 		{"feedback", "author_name", 2}, {"feedback", "created_at", 1},
-		{"ai/history", "id", 1}, {"ai/history", "title", 2}, {"ai/history", "scheduled_for", 2},
+		{"ai/history", "id", 1}, {"ai/history", "title", 1}, {"ai/history", "scheduled_for", 2},
 		{"ai/history", "status", 1}, {"ai/history", "attempts", 2},
 	} {
 		for _, direction := range []string{"asc", "desc"} {

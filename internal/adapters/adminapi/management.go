@@ -33,6 +33,7 @@ func (h *Management) Router(events http.Handler) http.Handler {
 	mux.HandleFunc("GET /api/v1/admin/event-workspace", h.eventWorkspace)
 	mux.HandleFunc("PUT /api/v1/admin/ai/settings", h.saveAISettings)
 	mux.HandleFunc("GET /api/v1/admin/ai/history", h.aiHistory)
+	mux.HandleFunc("GET /api/v1/admin/ai/history/{id}", h.aiHistoryItem)
 	mux.HandleFunc("POST /api/v1/admin/events", h.createEvent)
 	mux.HandleFunc("POST /api/v1/admin/publications", h.createPublication)
 	mux.HandleFunc("PUT /api/v1/admin/publications/{id}", h.createPublication)

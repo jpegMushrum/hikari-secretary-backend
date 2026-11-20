@@ -77,12 +77,14 @@ Mini App настраивает существующие черновики из
 | `/people` | `id`, `name`, `visits`, `last_visit`, `feedback_count`, `is_russian_citizen`, `is_itmo_student` |
 | `/publications` | `id`, `text`, `status`, `created_at`, `scheduled_at` |
 | `/feedback` | `id`, `text`, `event_title`, `author_name`, `created_at` |
-| `/ai/history` | `id`, `title`, `scheduled_for`, `status`, `attempts` |
+| `/ai/history` | `id`, `title`, `scheduled_for`, `status`, `publication_status`, `attempts` |
 
 В списке участников встречи `telegram` сортирует по username без учёта
 регистра. Участники без username идут последними при обоих направлениях.
 В списке публикаций при сортировке по `scheduled_at` записи без даты
 идут последними при `asc` и первыми при `desc`.
+В истории ИИ при сортировке по `publication_status` задания без связанного
+статуса идут последними в обоих направлениях.
 
 ## Настройка черновика из бота
 
@@ -141,7 +143,16 @@ ADMIN_MEDIA_DIR по умолчанию data/admin-media. Backend и бот до
 - `GET /api/v1/admin/ai/history`: `page`, `page_size`, `status`,
   `sort` (по умолчанию scheduled_for), `order` (по умолчанию desc). Возвращает
   стандартный табличный envelope и задания со статусом, попытками,
-  материалом, publication_id и последней ошибкой. Пустая страница — `[]`.
+  материалом, `publication_id`, `publication_status` и последней ошибкой.
+  Для пустой страницы `items` — `[]`. Фильтр `status` относится к заданию.
+  Сортировка по названию использует `topic.title`, как при подготовке публикации; для старых записей без названия используется `title_ru`, `theme` или `topic`.
+- `GET /api/v1/admin/ai/history/{id}` возвращает объект задания в том же
+  формате, что элементы списка. Некорректный ID даёт `400`, отсутствующее
+  задание — `404`.
+
+`publication_status` показывает текущий статус связанной публикации
+(`draft`, `scheduled`, `sent`, `failed` или `cancelled`). Если связанной
+публикации нет, значение равно `null`.
 
 Настройки и история используют таблицы `ai_topic_settings` и `ai_topic_jobs`.
 Генератор и ключ провайдера настраиваются в окружении backend.

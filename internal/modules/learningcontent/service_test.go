@@ -68,6 +68,10 @@ func TestDeepSeekProviderRetriesTruncatedResponseAndKeepsRequestedLevel(t *testi
 			t.Error(err)
 		}
 		messages := request["messages"].([]any)
+		system := messages[0].(map[string]any)["content"].(string)
+		if !strings.Contains(system, "Название темы (title) пиши по-японски") {
+			t.Error("prompt missing Japanese topic title requirement")
+		}
 		user := messages[1].(map[string]any)["content"].(string)
 		if !strings.Contains(user, "既出語") || !strings.Contains(user, "N3") {
 			t.Errorf("history or level missing from prompt: %s", user)

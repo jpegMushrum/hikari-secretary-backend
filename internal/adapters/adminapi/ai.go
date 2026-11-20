@@ -37,10 +37,15 @@ func (h *Management) saveAISettings(w http.ResponseWriter, r *http.Request) {
 	h.aiSettings(w, r)
 }
 
+const aiHistorySelect = `SELECT j.id, j.scheduled_for, j.status, j.attempts, j.topic,
+	j.publication_id, p.status AS publication_status, j.last_error
+	FROM ai_topic_jobs j LEFT JOIN publications p ON p.id = j.publication_id`
+
 var aiHistorySortFields = map[string]string{
-	"id": "id", "scheduled_for": "scheduled_for", "status": "status", "attempts": "attempts",
-	"title": `COALESCE(NULLIF(topic->>'title_ru',''), NULLIF(topic->>'title',''),
-		NULLIF(topic->>'theme',''), NULLIF(topic->>'topic',''), 'Материал #' || id::text)`,
+	"id": "j.id", "scheduled_for": "j.scheduled_for", "status": "j.status", "attempts": "j.attempts",
+	"publication_status": "p.status",
+	"title": `COALESCE(NULLIF(topic->>'title',''), NULLIF(topic->>'title_ru',''),
+		NULLIF(topic->>'theme',''), NULLIF(topic->>'topic',''), 'Материал #' || j.id::text)`,
 }
 
 func (h *Management) aiHistory(w http.ResponseWriter, r *http.Request) {
@@ -69,10 +74,29 @@ func (h *Management) aiHistory(w http.ResponseWriter, r *http.Request) {
 		managementError(w, err)
 		return
 	}
-	items, err := h.queryRows(r, fmt.Sprintf(`SELECT id,scheduled_for,status,attempts,topic,publication_id,last_error FROM ai_topic_jobs WHERE ($1='' OR status=$1) ORDER BY %s %s,id %s LIMIT $2 OFFSET $3`, sortExpr, order, order), status, page.Size, page.Offset())
+	items, err := h.queryRows(r, aiHistorySelect+fmt.Sprintf(` WHERE ($1='' OR j.status=$1)
+		ORDER BY %s %s NULLS LAST, j.id %s LIMIT $2 OFFSET $3`, sortExpr, order, order), status, page.Size, page.Offset())
 	if err != nil {
 		managementError(w, err)
 		return
 	}
 	writePage(w, items, page, total, map[string]any{"status": status}, sort, order)
+}
+
+func (h *Management) aiHistoryItem(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, 400, "invalid_request")
+		return
+	}
+	items, err := h.queryRows(r, aiHistorySelect+" WHERE j.id=$1", id)
+	if err != nil {
+		managementError(w, err)
+		return
+	}
+	if len(items) == 0 {
+		writeError(w, 404, "not_found")
+		return
+	}
+	writeJSON(w, 200, items[0])
 }

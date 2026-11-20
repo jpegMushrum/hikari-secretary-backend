@@ -1625,7 +1625,8 @@ paths:
           schema: {type: string, enum: [pending, retry, generating, scheduled, failed, cancelled]}
         - name: sort
           in: query
-          schema: {type: string, enum: [id, title, scheduled_for, status, attempts], default: scheduled_for}
+          description: При сортировке по publication_status задания без связанного статуса идут последними в обоих направлениях.
+          schema: {type: string, enum: [id, title, scheduled_for, status, publication_status, attempts], default: scheduled_for}
         - name: order
           in: query
           schema: {type: string, enum: [asc, desc], default: desc}
@@ -1645,7 +1646,7 @@ paths:
                   sort:
                     type: object
                     properties:
-                      field: {type: string, enum: [id, title, scheduled_for, status, attempts]}
+                      field: {type: string, enum: [id, title, scheduled_for, status, publication_status, attempts]}
                       order: {type: string, enum: [asc, desc]}
                   filters:
                     type: object
@@ -1654,6 +1655,26 @@ paths:
         '400': {description: Некорректные параметры или повторные значения}
         '401': {description: Невалидный или отсутствующий initData}
         '403': {description: Не администратор}
+        '500': {description: Ошибка хранения}
+  /api/v1/admin/ai/history/{id}:
+    get:
+      summary: Отдельное задание подготовки материала ИИ
+      security: [{telegramInitData: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+      responses:
+        '200':
+          description: Задание, материал и статус связанной публикации
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AIJob'}
+        '400': {description: Некорректный ID задания}
+        '401': {description: Невалидный или отсутствующий initData}
+        '403': {description: Не администратор}
+        '404': {description: Задание отсутствует}
         '500': {description: Ошибка хранения}
 components:
   securitySchemes:
@@ -1706,7 +1727,7 @@ components:
         enabled: {type: boolean, description: Ключ и конфигурация генератора заданы при запуске backend}
     AIJob:
       type: object
-      required: [id, scheduled_for, status, attempts, topic, publication_id, last_error]
+      required: [id, scheduled_for, status, attempts, topic, publication_id, publication_status, last_error]
       properties:
         id: {type: integer, format: int64}
         scheduled_for: {type: string, format: date-time}
@@ -1717,6 +1738,10 @@ components:
           description: Материал в формате Topic модуля learningcontent, включая импортированную историю
           additionalProperties: true
         publication_id: {type: [integer, 'null'], format: int64}
+        publication_status:
+          type: [string, 'null']
+          enum: [draft, scheduled, sent, failed, cancelled, null]
+          description: Текущий статус связанной публикации или null при её отсутствии.
         last_error: {type: [string, 'null']}
     HealthStatus:
       type: object

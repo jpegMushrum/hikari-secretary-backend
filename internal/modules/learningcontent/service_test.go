@@ -29,10 +29,12 @@ type repositoryStub struct {
 	history     []Topic
 }
 
-func (r *repositoryStub) Preferences(context.Context) (Options, error)     { return r.preferences, nil }
-func (r *repositoryStub) History(context.Context, *int64) ([]Topic, error) { return r.history, nil }
-func (r *repositoryStub) RecordManual(context.Context, int64, Topic) error { return nil }
-func (r *repositoryStub) ReplaceHistory(context.Context, int64, Topic) (bool, error) {
+func (r *repositoryStub) Preferences(context.Context) (Options, error) { return r.preferences, nil }
+func (r *repositoryStub) History(context.Context) ([]Topic, error)     { return r.history, nil }
+func (r *repositoryStub) ScheduleManual(context.Context, domain.ScheduledDraft, Topic) (int64, error) {
+	return 0, nil
+}
+func (r *repositoryStub) ReplaceQueuedTopic(context.Context, int64, Topic) (bool, error) {
 	return true, nil
 }
 
@@ -42,8 +44,8 @@ func TestGenerateUsesStoredPreferencesAndRejectsRepeatedTopic(t *testing.T) {
 	repo := &repositoryStub{preferences: Options{JLPTLevel: "N3"}, history: []Topic{old}}
 	provider := &providerStub{topic: validTopic()}
 	provider.topic.Title = "  повтор  "
-	service := NewService(provider, repo, nil, domain.Target{Key: "target", Name: "Target", Destination: "-100"})
-	if _, err := service.Generate(context.Background(), nil, nil); err == nil {
+	service := NewService(provider, repo, domain.Target{Key: "target", Name: "Target", Destination: "-100"})
+	if _, err := service.Generate(context.Background(), nil); err == nil {
 		t.Fatal("expected repeated topic error")
 	}
 	if provider.options.JLPTLevel != "N3" {
@@ -73,7 +75,7 @@ func TestDeepSeekProviderRetriesTruncatedResponseAndKeepsRequestedLevel(t *testi
 			t.Error("prompt missing Japanese topic title requirement")
 		}
 		user := messages[1].(map[string]any)["content"].(string)
-		if !strings.Contains(user, "既出語") || !strings.Contains(user, "N3") {
+		if !strings.Contains(user, "既出語") || !strings.Contains(user, "昔の文法") || !strings.Contains(user, "N3") {
 			t.Errorf("history or level missing from prompt: %s", user)
 		}
 		if calls == 1 {
@@ -84,15 +86,50 @@ func TestDeepSeekProviderRetriesTruncatedResponseAndKeepsRequestedLevel(t *testi
 		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"finish_reason": "stop", "message": map[string]any{"content": string(raw)}}}})
 	}))
 	defer server.Close()
-	history := validTopic()
-	history.Vocabulary[0].Japanese = "既出語"
+	history := make([]Topic, 16)
+	history[15] = validTopic()
+	history[15].Vocabulary[0].Japanese = "既出語"
+	history[15].Grammar[0].Pattern = "昔の文法"
 	provider := NewDeepSeekProvider("key", "model", server.URL, time.Second, 5, 10, 3)
-	topic, err := provider.Generate(context.Background(), []Topic{history}, Options{JLPTLevel: "N3"})
+	topic, err := provider.Generate(context.Background(), history, Options{JLPTLevel: "N3"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if calls != 2 || topic.JLPTLevel != "N3" {
 		t.Fatalf("calls=%d topic=%+v", calls, topic)
+	}
+}
+
+func TestDeepSeekRetriesInvalidJSONWithStop(t *testing.T) {
+	for _, tc := range []struct {
+		name, first string
+		recover     bool
+	}{
+		{"empty", "", true},
+		{"spaces", "   ", true},
+		{"truncated", `{"title":`, true},
+		{"both responses empty", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				content := tc.first
+				if calls > 1 && tc.recover {
+					raw, _ := json.Marshal(validTopic())
+					content = string(raw)
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{
+					"finish_reason": "stop", "message": map[string]string{"content": content},
+				}}})
+			}))
+			defer server.Close()
+			provider := NewDeepSeekProvider("key", "model", server.URL, time.Second, 5, 10, 3)
+			topic, err := provider.Generate(context.Background(), nil, Options{JLPTLevel: "N3"})
+			if calls != 2 || (err == nil) != tc.recover || (tc.recover && topic.Title == "") {
+				t.Fatalf("calls=%d topic=%q err=%v", calls, topic.Title, err)
+			}
+		})
 	}
 }
 

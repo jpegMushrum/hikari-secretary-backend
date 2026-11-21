@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,8 @@ import (
 type Provider interface {
 	Generate(context.Context, []Topic, Options) (Topic, error)
 }
+
+var errIncompleteTopic = errors.New("DeepSeek вернул пустой или некорректный JSON материала")
 
 type DeepSeekProvider struct {
 	apiKey, model, baseURL                       string
@@ -27,33 +30,31 @@ func NewDeepSeekProvider(apiKey, model, baseURL string, timeout time.Duration, q
 
 func (p *DeepSeekProvider) Generate(ctx context.Context, history []Topic, options Options) (Topic, error) {
 	used := make([]map[string]string, 0, len(history))
+	grammar := map[string]int{}
+	vocabulary := map[string]int{}
 	for _, item := range history {
 		used = append(used, map[string]string{"conversation_topic": item.Title, "vocabulary_theme": item.VocabularyTheme})
+		for _, value := range item.Grammar {
+			if pattern := strings.TrimSpace(value.Pattern); pattern != "" {
+				grammar[pattern]++
+			}
+		}
+		for _, value := range item.Vocabulary {
+			if word := strings.TrimSpace(value.Japanese); word != "" {
+				vocabulary[word]++
+			}
+		}
 	}
 	usedJSON, _ := json.Marshal(used)
-	recentLanguage := make([]map[string]any, 0, min(len(history), 14))
-	for index, item := range history {
-		if index == 14 {
-			break
-		}
-		grammar := make([]string, 0, len(item.Grammar))
-		for _, value := range item.Grammar {
-			grammar = append(grammar, value.Pattern)
-		}
-		vocabulary := make([]string, 0, len(item.Vocabulary))
-		for _, value := range item.Vocabulary {
-			vocabulary = append(vocabulary, value.Japanese)
-		}
-		recentLanguage = append(recentLanguage, map[string]any{"grammar_patterns": grammar, "vocabulary_words": vocabulary})
-	}
-	recentLanguageJSON, _ := json.Marshal(recentLanguage)
+	languageJSON, _ := json.Marshal(map[string]map[string]int{"grammar_patterns": grammar, "vocabulary_words": vocabulary})
 	comment := ""
 	if options.AdminComment != nil && strings.TrimSpace(*options.AdminComment) != "" {
 		comment = " Пожелание администратора: " + strings.TrimSpace(*options.AdminComment)
 	}
 	guidance := map[string]string{"N5": "базовые короткие фразы", "N4": "элементарные связные фразы", "N3": "средний уровень: причины, сравнения и выражение мнения; конструкции N3, а не только N5-N4", "N2": "сложные связные высказывания", "N1": "продвинутая абстрактная лексика"}[options.JLPTLevel]
 	system := fmt.Sprintf("Ты составляешь ежедневный материал для разговорного клуба японского языка. Верни только JSON без Markdown. Материал должен точно соответствовать JLPT %s (%s), не упрощай его до более низкого уровня. Название темы (title) пиши по-японски. Объяснения и переводы пиши по-русски, примеры — по-японски. Не повторяй темы из истории.%s", options.JLPTLevel, guidance, comment)
-	user := fmt.Sprintf("История тем: %s\nНедавние языковые элементы (мягкий ориентир для разнообразия): %s\nВерни JSON с полями jlpt_level, title, vocabulary_theme, introduction, questions, vocabulary[{japanese,reading,translation}], grammar[{pattern,explanation,example,translation}]. Уровень jlpt_level строго %s. Дай ровно %d вопросов, %d слов и %d конструкций. Название до 40 символов, введение до 100, каждый вопрос до 80. Не добавляй текст вне JSON.", usedJSON, recentLanguageJSON, options.JLPTLevel, p.questionCount, p.vocabularyCount, p.grammarCount)
+	user := fmt.Sprintf("История тем: %s\nСлова и грамматические конструкции из всех сохранённых версий с числом употреблений: %s. Для разнообразия предпочитай новые и редко использованные элементы подходящего уровня.\nВерни JSON с полями jlpt_level, title, vocabulary_theme, introduction, questions, vocabulary[{japanese,reading,translation}], grammar[{pattern,explanation,example,translation}]. Уровень jlpt_level строго %s. Дай ровно %d вопросов, %d слов и %d конструкций. Название до 40 символов, введение до 100, каждый вопрос до 80. Не добавляй текст вне JSON.", usedJSON, languageJSON, options.JLPTLevel, p.questionCount, p.vocabularyCount, p.grammarCount)
+	user += ` Пример формата (число элементов и уровень возьми из задания): {"jlpt_level":"N3","title":"旅の思い出","vocabulary_theme":"Путешествия","introduction":"Обсудим поездки.","questions":["どこに行きましたか。"],"vocabulary":[{"japanese":"旅","reading":"たび","translation":"путешествие"}],"grammar":[{"pattern":"〜たことがある","explanation":"Опыт в прошлом","example":"京都に行ったことがあります。","translation":"Я бывал в Киото."}]}`
 	for attempt := 0; attempt < 2; attempt++ {
 		if attempt == 1 {
 			user += "\nПредыдущий ответ оборвался. Пересоздай полный JSON короче, сохрани число элементов и уровень."
@@ -68,11 +69,11 @@ func (p *DeepSeekProvider) Generate(ctx context.Context, history []Topic, option
 			}
 			return topic, nil
 		}
-		if finishReason != "length" {
+		if finishReason != "length" && !errors.Is(err, errIncompleteTopic) {
 			return Topic{}, err
 		}
 	}
-	return Topic{}, fmt.Errorf("DeepSeek response was truncated twice")
+	return Topic{}, fmt.Errorf("DeepSeek дважды не вернул полный JSON материала")
 }
 
 func (p *DeepSeekProvider) request(ctx context.Context, system, user string) (Topic, string, error) {
@@ -113,7 +114,7 @@ func (p *DeepSeekProvider) request(ctx context.Context, system, user string) (To
 	}
 	var topic Topic
 	if err = json.Unmarshal([]byte(completion.Choices[0].Message.Content), &topic); err != nil {
-		return Topic{}, finishReason, fmt.Errorf("invalid DeepSeek topic JSON: %w", err)
+		return Topic{}, finishReason, errIncompleteTopic
 	}
 	return topic, finishReason, nil
 }

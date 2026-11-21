@@ -210,13 +210,14 @@ func (h *Handler) generateAITopic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Options              *learningcontent.Options `json:"options"`
-		ExcludePublicationID *int64                   `json:"exclude_publication_id"`
+		Options *learningcontent.Options `json:"options"`
+		// Accept the legacy bot field. Replacements now consider every saved version.
+		ExcludePublicationID *int64 `json:"exclude_publication_id"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
 	}
-	topic, err := h.ai.Generate(r.Context(), body.Options, body.ExcludePublicationID)
+	topic, err := h.ai.Generate(r.Context(), body.Options)
 	if err != nil {
 		log.Printf("AI generation failed: %v", err)
 		writeError(w, http.StatusBadGateway, "ai_generation_failed")
@@ -243,7 +244,7 @@ func (h *Handler) publishAITopic(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid_request")
 		return
 	}
-	id, err := h.ai.Schedule(r.Context(), body.Topic, body.CreatorID, scheduled, body.SourceKey, true)
+	id, err := h.ai.Schedule(r.Context(), body.Topic, body.CreatorID, scheduled, body.SourceKey)
 	if errors.Is(err, domain.ErrPendingPublicationLimit) {
 		writeError(w, 409, "capacity_limit")
 		return

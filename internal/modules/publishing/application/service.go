@@ -67,19 +67,26 @@ func (s *Service) CreateDraft(ctx context.Context, draft domain.Draft) (int64, e
 }
 
 func (s *Service) CreateScheduled(ctx context.Context, scheduled domain.ScheduledDraft) (int64, error) {
-	if err := validateDraft(&scheduled.Draft); err != nil {
+	if err := PrepareScheduledDraft(&scheduled); err != nil {
 		return 0, err
 	}
+	return s.repository.CreateScheduled(ctx, scheduled)
+}
+
+func PrepareScheduledDraft(scheduled *domain.ScheduledDraft) error {
+	if err := validateDraft(&scheduled.Draft); err != nil {
+		return err
+	}
 	if scheduled.ScheduledAt.IsZero() || len(scheduled.Targets) == 0 {
-		return 0, fmt.Errorf("schedule and at least one target are required")
+		return fmt.Errorf("schedule and at least one target are required")
 	}
 	for _, target := range scheduled.Targets {
 		if target.Key == "" || target.Name == "" || target.Destination == "" {
-			return 0, fmt.Errorf("invalid target")
+			return fmt.Errorf("invalid target")
 		}
 	}
 	scheduled.ScheduledAt = scheduled.ScheduledAt.UTC()
-	return s.repository.CreateScheduled(ctx, scheduled)
+	return nil
 }
 
 func (s *Service) RecoverInterruptedDeliveries(ctx context.Context) error {

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hikari Secretary Backend API
-  version: 0.3.3
+  version: 0.3.4
   description: |
     Внутренний API платформы Hikari Secretary. Административные предметные
     endpoints требуют проверенные Telegram Mini App credentials и роль
@@ -1656,6 +1656,49 @@ paths:
         '401': {description: Невалидный или отсутствующий initData}
         '403': {description: Не администратор}
         '500': {description: Ошибка хранения}
+  /api/v1/admin/ai/history/latest:
+    get:
+      summary: Последняя генерация материала ИИ
+      description: >
+        Выбирается задание с наибольшим scheduled_for, затем с наибольшим ID.
+        Начальные задания в очереди без попыток, ручного запроса, материала и
+        публикации пропускаются. Фильтры, сортировка и страницы истории на выбор
+        не влияют.
+      security: [{telegramInitData: []}]
+      responses:
+        '200':
+          description: Последнее задание с признаком доступности замены
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AIJob'}
+        '204': {description: Нет заданий, подходящих под критерии выбора}
+        '401': {description: Невалидный или отсутствующий initData}
+        '403': {description: Не администратор}
+        '500': {description: Ошибка хранения}
+  /api/v1/admin/ai/history/latest/regenerate:
+    post:
+      summary: Поставить последнюю генерацию ИИ в очередь на замену
+      description: >
+        Запрос без тела. Сервер заново выбирает последнее задание по правилам
+        GET /api/v1/admin/ai/history/latest и проверяет доступность его замены.
+        У связанной публикации сохраняются время отправки и цели.
+      security: [{telegramInitData: []}]
+      responses:
+        '202':
+          description: Задание принято в очередь
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accepted, id]
+                properties:
+                  accepted: {type: boolean, const: true}
+                  id: {type: integer, format: int64, minimum: 1}
+        '401': {description: Невалидный или отсутствующий initData}
+        '403': {description: Не администратор}
+        '409': {description: 'Нет последнего задания или его замена недоступна, код invalid_state'}
+        '503': {description: 'Генератор не подключён, код ai_disabled'}
+        '500': {description: Ошибка хранения}
   /api/v1/admin/ai/history/{id}:
     get:
       summary: Отдельное задание подготовки материала ИИ
@@ -1675,6 +1718,75 @@ paths:
         '401': {description: Невалидный или отсутствующий initData}
         '403': {description: Не администратор}
         '404': {description: Задание отсутствует}
+        '500': {description: Ошибка хранения}
+  /api/v1/admin/ai/history/{id}/versions:
+    get:
+      summary: Сохранённые версии материала задания ИИ
+      description: Страницы включают текущую версию и отсортированы по номеру версии от новых к старым.
+      security: [{telegramInitData: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/PageSize'}
+      responses:
+        '200':
+          description: Страница сохранённых версий. Для задания без версий массив items пуст.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, page, sort, filters]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/AITopicVersion'}
+                  page: {$ref: '#/components/schemas/PageMetadata'}
+                  sort:
+                    type: object
+                    required: [field, order]
+                    properties:
+                      field: {type: string, const: version}
+                      order: {type: string, const: desc}
+                  filters:
+                    type: object
+                    additionalProperties: false
+        '400': {description: 'Некорректный ID или параметры пагинации, код invalid_request'}
+        '401': {description: Невалидный или отсутствующий initData}
+        '403': {description: Не администратор}
+        '404': {description: 'Задание отсутствует, код not_found'}
+        '500': {description: Ошибка хранения}
+  /api/v1/admin/ai/history/{id}/regenerate:
+    post:
+      summary: Поставить задание ИИ в очередь повторной генерации
+      description: >
+        Запрос без тела. Для задания с ошибкой можно повторить генерацию.
+        Если с заданием связана публикация ИИ, её содержимое можно заменить
+        до начала доставки с сохранением времени отправки и целей.
+      security: [{telegramInitData: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer, format: int64, minimum: 1}
+      responses:
+        '202':
+          description: Задание принято в очередь
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accepted]
+                properties:
+                  accepted: {type: boolean, const: true}
+        '400': {description: 'Некорректный ID задания, код invalid_request'}
+        '401': {description: Невалидный или отсутствующий initData}
+        '403': {description: Не администратор}
+        '404': {description: 'Задание отсутствует, код not_found'}
+        '409': {description: 'Повторная генерация недоступна в текущем состоянии, код invalid_state'}
+        '503': {description: 'Генератор не подключён, код ai_disabled'}
         '500': {description: Ошибка хранения}
 components:
   securitySchemes:
@@ -1727,7 +1839,7 @@ components:
         enabled: {type: boolean, description: Ключ и конфигурация генератора заданы при запуске backend}
     AIJob:
       type: object
-      required: [id, scheduled_for, status, attempts, topic, publication_id, publication_status, last_error]
+      required: [id, scheduled_for, status, attempts, topic, publication_id, publication_status, last_error, version_count, can_regenerate]
       properties:
         id: {type: integer, format: int64}
         scheduled_for: {type: string, format: date-time}
@@ -1743,6 +1855,23 @@ components:
           enum: [draft, scheduled, sent, failed, cancelled, null]
           description: Текущий статус связанной публикации или null при её отсутствии.
         last_error: {type: [string, 'null']}
+        version_count:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Число сохранённых версий материала, включая текущую.
+        can_regenerate:
+          type: boolean
+          description: Доступна ли повторная генерация с учётом состояния задания, доставки и подключения генератора.
+    AITopicVersion:
+      type: object
+      required: [version, topic]
+      properties:
+        version: {type: integer, minimum: 1}
+        topic:
+          type: object
+          description: Сохранённый материал в формате Topic модуля learningcontent, включая импортированную историю.
+          additionalProperties: true
     HealthStatus:
       type: object
       required: [status]

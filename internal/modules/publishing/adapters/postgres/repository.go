@@ -79,6 +79,21 @@ func (r *Repository) CreateDraft(ctx context.Context, draft domain.Draft) (int64
 }
 
 func (r *Repository) CreateScheduled(ctx context.Context, scheduled domain.ScheduledDraft) (int64, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+
+	id, err := CreateScheduledTx(ctx, tx, scheduled)
+	if err != nil {
+		return 0, err
+	}
+	return id, tx.Commit(ctx)
+}
+
+// CreateScheduledTx also lets the AI worker commit its job and publication together.
+func CreateScheduledTx(ctx context.Context, tx pgx.Tx, scheduled domain.ScheduledDraft) (int64, error) {
 	entitiesJSON, err := json.Marshal(scheduled.Entities)
 	if err != nil {
 		return 0, err
@@ -91,12 +106,6 @@ func (r *Repository) CreateScheduled(ctx context.Context, scheduled domain.Sched
 		}
 		rich = string(richJSON)
 	}
-
-	tx, err := r.pool.Begin(ctx)
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback(ctx)
 
 	var id int64
 	var status string
@@ -112,7 +121,7 @@ func (r *Repository) CreateScheduled(ctx context.Context, scheduled domain.Sched
 		return 0, err
 	}
 	if status == string(domain.StatusScheduled) {
-		return id, tx.Commit(ctx)
+		return id, nil
 	}
 	if status != string(domain.StatusDraft) {
 		return 0, domain.ErrInvalidState
@@ -153,9 +162,6 @@ func (r *Repository) CreateScheduled(ctx context.Context, scheduled domain.Sched
 		return 0, err
 	}
 	if _, err = tx.Exec(ctx, `UPDATE publication_deliveries SET status='pending',next_attempt_at=$2 WHERE publication_id=$1`, id, scheduled.ScheduledAt); err != nil {
-		return 0, err
-	}
-	if err = tx.Commit(ctx); err != nil {
 		return 0, err
 	}
 	return id, nil

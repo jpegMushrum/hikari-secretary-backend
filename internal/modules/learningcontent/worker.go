@@ -2,9 +2,12 @@ package learningcontent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/domain"
 )
 
 type Worker struct {
@@ -14,11 +17,13 @@ type Worker struct {
 	publishTime string
 	creatorID   int64
 	maxAttempts int
+	lease       time.Duration
 	logger      *slog.Logger
 }
 
-func NewWorker(repo *PostgresRepository, service *Service, location *time.Location, publishTime string, creatorID int64, maxAttempts int, logger *slog.Logger) *Worker {
-	return &Worker{repo, service, location, publishTime, creatorID, maxAttempts, logger}
+func NewWorker(repo *PostgresRepository, service *Service, location *time.Location, publishTime string, creatorID int64, maxAttempts int, providerTimeout time.Duration, logger *slog.Logger) *Worker {
+	// DeepSeek may retry one truncated response within the same generation.
+	return &Worker{repo, service, location, publishTime, creatorID, maxAttempts, 2*providerTimeout + time.Minute, logger}
 }
 func (w *Worker) Run(ctx context.Context) {
 	ticker := time.NewTicker(30 * time.Second)
@@ -33,6 +38,13 @@ func (w *Worker) Run(ctx context.Context) {
 	}
 }
 func (w *Worker) cycle(ctx context.Context) {
+	if w.publishTime != "" {
+		w.enqueueDaily(ctx)
+	}
+	w.processDue(ctx)
+}
+
+func (w *Worker) enqueueDaily(ctx context.Context) {
 	now := time.Now().In(w.location)
 	parsed, err := time.Parse("15:04", w.publishTime)
 	if err != nil {
@@ -48,7 +60,10 @@ func (w *Worker) cycle(ctx context.Context) {
 			w.logger.Error("enqueue AI topic", "error", err)
 		}
 	}
-	job, err := w.repo.Claim(ctx)
+}
+
+func (w *Worker) processDue(ctx context.Context) {
+	job, err := w.repo.Claim(ctx, w.publishTime != "", w.lease)
 	if err != nil {
 		w.logger.Error("claim AI topic", "error", err)
 		return
@@ -56,12 +71,16 @@ func (w *Worker) cycle(ctx context.Context) {
 	if job == nil {
 		return
 	}
-	topic, err := w.service.Generate(ctx, nil, nil)
+	topic, err := w.service.Generate(ctx, nil)
 	if err == nil {
-		var publicationID int64
-		publicationID, err = w.service.Schedule(ctx, topic, w.creatorID, maxTime(job.ScheduledFor, time.Now().UTC()), fmt.Sprintf("daily-topic-job:%d", job.ID), false)
+		creator := w.creatorID
+		if job.RequestedBy != nil {
+			creator = *job.RequestedBy
+		}
+		var draft domain.ScheduledDraft
+		draft, err = w.service.scheduledDraft(topic, creator, maxTime(job.ScheduledFor, time.Now().UTC()), fmt.Sprintf("daily-topic-job:%d", job.ID))
 		if err == nil {
-			err = w.repo.MarkScheduled(ctx, job.ID, publicationID, topic)
+			err = w.repo.Complete(ctx, job, draft, topic)
 		}
 	}
 	if err == nil {
@@ -69,11 +88,13 @@ func (w *Worker) cycle(ctx context.Context) {
 		return
 	}
 	var retry *time.Time
-	if job.Attempts < w.maxAttempts {
+	if job.RequestedBy == nil && job.Attempts < w.maxAttempts && !errors.Is(err, domain.ErrInvalidState) {
 		value := time.Now().UTC().Add(time.Duration(min(5*(1<<(job.Attempts-1)), 360)) * time.Minute)
 		retry = &value
 	}
-	_ = w.repo.MarkFailed(ctx, job.ID, err.Error(), retry)
+	if markErr := w.repo.MarkFailed(ctx, job, err.Error(), retry); markErr != nil {
+		w.logger.Error("record AI generation failure", "job_id", job.ID, "error", markErr)
+	}
 	w.logger.Error("AI topic generation failed", "job_id", job.ID, "attempt", job.Attempts, "error", err)
 }
 func maxTime(a, b time.Time) time.Time {

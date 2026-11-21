@@ -62,6 +62,7 @@ func NewRouter(pool *pgxpool.Pool, flows *interactions.Service, publications *pu
 	mux.HandleFunc("POST /events/{publication_id}/cancel", h.cancelEvent)
 	mux.HandleFunc("POST /events/{publication_id}/registrations", h.register)
 	mux.HandleFunc("GET /events/{publication_id}/registrations/{telegram_id}", h.registrationStatus)
+	mux.HandleFunc("PATCH /events/{publication_id}/registrations/{telegram_id}/reminder", h.changeReminder)
 	mux.HandleFunc("DELETE /events/{publication_id}/registrations/{telegram_id}", h.cancelRegistration)
 	mux.HandleFunc("GET /events/{publication_id}/registrations", h.eventRegistrations)
 
@@ -458,12 +459,23 @@ func (h *Handler) deleteFlow(writer http.ResponseWriter, request *http.Request) 
 		writeError(writer, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	err := h.flows.Delete(request.Context(), telegramID, kind)
+	match := interactions.Flow{TelegramUserID: telegramID, Kind: kind}
+	params := request.URL.Query()
+	if params.Has("publication_id") || params.Has("stage") {
+		id, err := strconv.ParseInt(params.Get("publication_id"), 10, 64)
+		stage := params.Get("stage")
+		if kind != "registration" || err != nil || id <= 0 || stage == "" || len(stage) > 64 {
+			writeError(writer, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		match.PublicationID, match.Stage = &id, &stage
+	}
+	deleted, err := h.flows.Delete(request.Context(), match)
 	if err != nil {
 		writeError(writer, http.StatusInternalServerError, "internal_error")
 		return
 	}
-	writeJSON(writer, http.StatusOK, map[string]any{"deleted": true})
+	writeJSON(writer, http.StatusOK, map[string]any{"deleted": match.PublicationID == nil || deleted})
 }
 
 type publicationRequest struct {
@@ -885,6 +897,10 @@ func (h *Handler) markPublished(writer http.ResponseWriter, request *http.Reques
 
 func (h *Handler) listEvents(writer http.ResponseWriter, request *http.Request) {
 	view := request.URL.Query().Get("view")
+	if view == "upcoming" {
+		h.upcomingEvents(writer, request)
+		return
+	}
 	if view == "active_count" {
 		var count int64
 		if err := h.pool.QueryRow(request.Context(), `SELECT COUNT(*) FROM events WHERE status='active' AND ends_at>NOW()`).Scan(&count); err != nil {
@@ -1005,7 +1021,8 @@ func (h *Handler) register(writer http.ResponseWriter, request *http.Request) {
 		SELECT r.event_id,p.id,$3,$4,'registered',NOW()
 		FROM event_publication_references r JOIN telegram_identities ti ON ti.telegram_user_id=$1 JOIN people p ON p.id=ti.person_id
 		WHERE r.external_publication_id=$2
-		ON CONFLICT(event_id,person_id) DO UPDATE SET reminders_enabled=EXCLUDED.reminders_enabled,reminder_offset_minutes=EXCLUDED.reminder_offset_minutes,status='registered',registered_at=NOW(),cancelled_at=NULL,reminder_sent_at=NULL,attendance_prompt_sent_at=NULL`, body.TelegramUserID, strconv.FormatInt(publicationID, 10), body.ReminderOffsetMinutes != nil, body.ReminderOffsetMinutes)
+		ON CONFLICT(event_id,person_id) DO UPDATE SET reminders_enabled=EXCLUDED.reminders_enabled,reminder_offset_minutes=EXCLUDED.reminder_offset_minutes,status='registered',registered_at=NOW(),cancelled_at=NULL,reminder_sent_at=NULL,attendance_prompt_sent_at=NULL
+		WHERE event_registrations.status='cancelled'`, body.TelegramUserID, strconv.FormatInt(publicationID, 10), body.ReminderOffsetMinutes != nil, body.ReminderOffsetMinutes)
 	if err != nil {
 		writeError(writer, http.StatusInternalServerError, "internal_error")
 		return
@@ -1226,8 +1243,9 @@ func (h *Handler) markAttendancePromptSent(writer http.ResponseWriter, request *
 
 func (h *Handler) markRegistrationTimestamp(writer http.ResponseWriter, request *http.Request, column string) {
 	var body struct {
-		TelegramUserID int64 `json:"telegram_user_id"`
-		PublicationID  int64 `json:"publication_id"`
+		TelegramUserID        int64  `json:"telegram_user_id"`
+		PublicationID         int64  `json:"publication_id"`
+		ReminderOffsetMinutes *int32 `json:"reminder_offset_minutes"`
 	}
 	if !decodeJSON(writer, request, &body) || body.TelegramUserID <= 0 || body.PublicationID <= 0 {
 		writeError(writer, http.StatusBadRequest, "invalid_request")
@@ -1237,8 +1255,16 @@ func (h *Handler) markRegistrationTimestamp(writer http.ResponseWriter, request 
 		writeError(writer, http.StatusInternalServerError, "internal_error")
 		return
 	}
-	query := `UPDATE event_registrations er SET ` + column + `=NOW(),updated_at=NOW() FROM event_publication_references r JOIN telegram_identities ti ON ti.telegram_user_id=$1 WHERE er.event_id=r.event_id AND r.external_publication_id=$2`
-	result, err := h.pool.Exec(request.Context(), query, body.TelegramUserID, strconv.FormatInt(body.PublicationID, 10))
+	query := `UPDATE event_registrations er SET ` + column + `=NOW(),updated_at=NOW() FROM event_publication_references r JOIN telegram_identities ti ON ti.telegram_user_id=$1 WHERE er.event_id=r.event_id AND er.person_id=ti.person_id AND r.external_publication_id=$2`
+	args := []any{body.TelegramUserID, strconv.FormatInt(body.PublicationID, 10)}
+	if column == "reminder_sent_at" {
+		query += ` AND er.status='registered' AND er.reminders_enabled AND er.reminder_sent_at IS NULL
+			AND ($3::int IS NULL OR er.reminder_offset_minutes=$3)
+			AND EXISTS (SELECT 1 FROM events e WHERE e.id=er.event_id AND e.status='active'
+				AND e.starts_at<=NOW()+er.reminder_offset_minutes*interval '1 minute')`
+		args = append(args, body.ReminderOffsetMinutes)
+	}
+	result, err := h.pool.Exec(request.Context(), query, args...)
 	if err != nil {
 		writeError(writer, http.StatusInternalServerError, "internal_error")
 		return

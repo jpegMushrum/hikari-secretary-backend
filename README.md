@@ -1,6 +1,6 @@
 # Hikari Secretary Backend
 
-![Версия](https://img.shields.io/badge/version-v0.3.4-6A5ACD)
+![Версия](https://img.shields.io/badge/version-v0.3.5-6A5ACD)
 ![Go](https://img.shields.io/badge/Go-1.27-00ADD8?logo=go&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-18-4169E1?logo=postgresql&logoColor=white)
 
@@ -31,16 +31,14 @@ Python-бот направляет в этот сервис профили, ме
 ## Быстрый старт для разработки
 
 В корне интеграционного репозитория создайте `targets.json` по
-`targets.example.json` и `.env` по `.env.example`. При первом запуске
-на пустом томе задайте `LOCAL_DATABASE_NAME=hikari_dev`. Затем запустите:
+`targets.example.json` и `.env` по `.env.example`. Затем запустите:
 
 ```sh
 docker compose -f docker-compose.bot-local.yml up -d --build backend
 ```
 
-Запускаются PostgreSQL, миграции и backend. `LOCAL_DATABASE_NAME` в корневом
-`.env` выбирает базу локального стенда. Для работы с копией импортированных данных сначала
-восстановите её и укажите имя этой базы.
+На новом томе PostgreSQL создаёт базу `hikari_dev`. Сервис `migrate`
+применяет к ней миграции перед запуском backend.
 API остаётся во внутренней сети Docker. Для работы через браузер запустите
 `docker compose -f docker-compose.bot-local.yml up -d --build miniapp` из
 корня. Этот запуск включает локальный gateway для браузерной авторизации.

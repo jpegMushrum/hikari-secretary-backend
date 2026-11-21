@@ -1986,7 +1986,7 @@ components:
   schemas:
     BotUpcomingEvent:
       type: object
-      required: [post_id, title, text, starts_at, ends_at, registered, reminders_enabled, reminder_offset_minutes]
+      required: [post_id, title, text, starts_at, ends_at, registered, reminders_enabled, reminder_offset_minutes, announcement_url]
       properties:
         post_id: {type: integer, format: int64, description: ID публикации для Bot API}
         title: {type: string}
@@ -1994,6 +1994,7 @@ components:
         starts_at: {type: string, format: date-time}
         ends_at: {type: string, format: date-time}
         registered: {type: boolean}
+        announcement_url: {type: [string, 'null'], format: uri, description: Ссылка на доставленный анонс в Telegram. При отсутствии подходящей доставки возвращается null.}
         reminders_enabled: {type: boolean}
         reminder_offset_minutes: {type: [integer, 'null'], format: int32}
     AISettingsInput:

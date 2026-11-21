@@ -30,6 +30,15 @@ func TestUpcomingEventsAndReminderManagement(t *testing.T) {
 		UPDATE events SET status='cancelled',cancelled_at=NOW() WHERE id=6;
 		INSERT INTO event_publication_references(event_id,provider,external_publication_id,published)
 			SELECT id,'hikari_publishing',id::text,id NOT IN (3,4) FROM events;
+		UPDATE event_publication_references SET provider='legacy_sqlite' WHERE event_id IN (2,3);
+		INSERT INTO publications(id,creator_telegram_id,status) VALUES (1,1,'sent'),(2,1,'sent'),(3,1,'draft');
+		INSERT INTO publication_deliveries(publication_id,target_key,target_name,destination,status,external_id,message_thread_id) VALUES
+			(1,'private','Private','-1001234567890','sent','10',NULL),
+			(1,'failed','Failed','@unpublished','failed','11',NULL),
+			(1,'channel','Channel','@club_news','sent','12',NULL),
+			(2,'unusable','Basic group','-100123456789','sent','13',NULL),
+			(2,'forum','Club forum','-1012345678901','sent','27',19),
+			(3,'draft','Draft','@club_news','pending',NULL,NULL);
 		INSERT INTO event_registrations(event_id,person_id,status,registered_at,cancelled_at,reminders_enabled,reminder_offset_minutes)
 			VALUES (1,1,'registered',NOW()-interval '1 day',NULL,TRUE,60),
 				(1,2,'registered',NOW()-interval '1 day',NULL,TRUE,60),
@@ -60,9 +69,10 @@ func TestUpcomingEventsAndReminderManagement(t *testing.T) {
 	call(http.MethodDelete, flowPath+"?publication_id=2&stage=citizenship", "", 200)
 	call(http.MethodGet, flowPath, "", 404)
 	type event struct {
-		ID         int  `json:"post_id"`
-		Registered bool `json:"registered"`
-		Reminders  bool `json:"reminders_enabled"`
+		ID         int    `json:"post_id"`
+		Registered bool   `json:"registered"`
+		Reminders  bool   `json:"reminders_enabled"`
+		URL        string `json:"announcement_url"`
 	}
 	list := func(user string) []event {
 		t.Helper()
@@ -73,10 +83,12 @@ func TestUpcomingEventsAndReminderManagement(t *testing.T) {
 		}
 		return items
 	}
-	if got := list("1"); !slices.Equal(got, []event{{1, true, true}, {2, false, false}, {3, true, false}}) {
+	const publicURL = "https://t.me/club_news/12"
+	const forumURL = "https://t.me/c/12345678901/19/27"
+	if got := list("1"); !slices.Equal(got, []event{{1, true, true, publicURL}, {2, false, false, forumURL}, {3, true, false, ""}}) {
 		t.Fatalf("participant's upcoming events = %+v", got)
 	}
-	if got := list("999"); !slices.Equal(got, []event{{1, false, false}, {2, false, false}}) {
+	if got := list("999"); !slices.Equal(got, []event{{1, false, false, publicURL}, {2, false, false, forumURL}}) {
 		t.Fatalf("new participant's upcoming events = %+v", got)
 	}
 	const reminder = "/events/1/registrations/1/reminder"

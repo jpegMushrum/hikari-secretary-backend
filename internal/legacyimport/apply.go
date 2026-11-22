@@ -413,17 +413,18 @@ func importAIState(ctx context.Context, tx pgx.Tx, snapshot legacySnapshot) erro
 		if err != nil {
 			return fmt.Errorf("AI topic job %d has invalid update time: %w", job.id, err)
 		}
+		automatic := true
 		var publicationID any
 		if job.postID.Valid {
 			var exists bool
-			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM publications WHERE id=$1)`, job.postID.Int64).Scan(&exists); err != nil {
+			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM publications WHERE id=$1),NOT EXISTS(SELECT 1 FROM publications WHERE id=$1 AND source_key IS DISTINCT FROM $2)`, job.postID.Int64, fmt.Sprintf("daily-topic-job:%d", job.id)).Scan(&exists, &automatic); err != nil {
 				return err
 			}
 			if exists {
 				publicationID = job.postID.Int64
 			}
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO ai_topic_jobs(id,scheduled_for,status,attempts,next_attempt_at,prompt_version,topic,publication_id,last_error,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,NULLIF($7,'')::jsonb,$8,$9,$10,$11) ON CONFLICT(scheduled_for) DO UPDATE SET status=EXCLUDED.status,attempts=EXCLUDED.attempts,next_attempt_at=EXCLUDED.next_attempt_at,prompt_version=EXCLUDED.prompt_version,topic=EXCLUDED.topic,publication_id=EXCLUDED.publication_id,last_error=EXCLUDED.last_error,created_at=EXCLUDED.created_at,updated_at=EXCLUDED.updated_at`, job.id, scheduledFor, job.status, job.attempts, nextAttemptAt, nullableString(job.promptVersion), nullableString(job.topic), publicationID, nullableString(job.lastError), createdAt, updatedAt); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO ai_topic_jobs(id,scheduled_for,status,attempts,next_attempt_at,prompt_version,topic,publication_id,last_error,created_at,updated_at,automatic) VALUES($1,$2,$3,$4,$5,$6,NULLIF($7,'')::jsonb,$8,$9,$10,$11,$12) ON CONFLICT(scheduled_for) WHERE NOT slot_released DO UPDATE SET automatic=EXCLUDED.automatic,status=EXCLUDED.status,attempts=EXCLUDED.attempts,next_attempt_at=EXCLUDED.next_attempt_at,prompt_version=EXCLUDED.prompt_version,topic=EXCLUDED.topic,publication_id=EXCLUDED.publication_id,last_error=EXCLUDED.last_error,created_at=EXCLUDED.created_at,updated_at=EXCLUDED.updated_at`, job.id, scheduledFor, job.status, job.attempts, nextAttemptAt, nullableString(job.promptVersion), nullableString(job.topic), publicationID, nullableString(job.lastError), createdAt, updatedAt, automatic); err != nil {
 			return err
 		}
 	}

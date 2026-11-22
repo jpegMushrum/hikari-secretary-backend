@@ -22,14 +22,22 @@ import (
 
 // Management is mounted behind the same administrator middleware as event reads.
 type Management struct {
-	Pool         *pgxpool.Pool
-	Publications *publishing.Service
-	AIEnabled    bool
+	Pool                   *pgxpool.Pool
+	Publications           *publishing.Service
+	AIEnabled              bool
+	AIAutomationConfigured bool
+	AILocation             *time.Location
+	AIPublishTime          string
 }
 
 func (h *Management) Router(events http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/admin/ai/settings", h.aiSettings)
+	mux.HandleFunc("GET /api/v1/admin/ai/automation", h.aiAutomation)
+	mux.HandleFunc("PUT /api/v1/admin/ai/automation", h.setAIAutomation)
+	mux.HandleFunc("POST /api/v1/admin/ai/automation/cancel-today", h.cancelAIToday)
+	mux.HandleFunc("POST /api/v1/admin/ai/automation/cancel-queued", h.cancelAIQueued)
+	mux.HandleFunc("POST /api/v1/admin/ai/generations/queue", h.queueAIGeneration)
 	mux.HandleFunc("GET /api/v1/admin/event-workspace", h.eventWorkspace)
 	mux.HandleFunc("PUT /api/v1/admin/ai/settings", h.saveAISettings)
 	mux.HandleFunc("GET /api/v1/admin/ai/history", h.aiHistory)

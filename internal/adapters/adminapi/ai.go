@@ -4,10 +4,73 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/pagination"
 )
+
+func (h *Management) today() time.Time {
+	now := time.Now().In(h.AILocation)
+	return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+}
+
+func (h *Management) aiAutomation(w http.ResponseWriter, r *http.Request) {
+	s, err := learningcontent.NewPostgresRepository(h.Pool).Automation(r.Context(), h.AIAutomationConfigured, h.today())
+	if err != nil {
+		managementError(w, err)
+		return
+	}
+	writeJSON(w, 200, s)
+}
+
+func (h *Management) setAIAutomation(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if !decodeBody(w, r, &body) {
+		return
+	}
+	if body.Enabled == nil {
+		writeError(w, 400, "invalid_request")
+		return
+	}
+	if *body.Enabled && !h.AIAutomationConfigured {
+		writeError(w, 409, "invalid_state")
+		return
+	}
+	if err := learningcontent.NewPostgresRepository(h.Pool).SetAutomation(r.Context(), *body.Enabled, h.today(), administratorID(r)); err != nil {
+		managementError(w, err)
+		return
+	}
+	h.aiAutomation(w, r)
+}
+
+func (h *Management) cancelAIToday(w http.ResponseWriter, r *http.Request) {
+	if err := learningcontent.NewPostgresRepository(h.Pool).CancelToday(r.Context(), h.today(), administratorID(r)); err != nil {
+		managementError(w, err)
+		return
+	}
+	h.aiAutomation(w, r)
+}
+
+func (h *Management) cancelAIQueued(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		PublicationID int64 `json:"publication_id"`
+	}
+	if !decodeBody(w, r, &body) {
+		return
+	}
+	if body.PublicationID <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	if err := learningcontent.NewPostgresRepository(h.Pool).CancelQueued(r.Context(), body.PublicationID, administratorID(r)); err != nil {
+		managementError(w, err)
+		return
+	}
+	h.aiAutomation(w, r)
+}
 
 func (h *Management) aiSettings(w http.ResponseWriter, r *http.Request) {
 	s, err := learningcontent.NewPostgresRepository(h.Pool).Settings(r.Context())
@@ -140,6 +203,35 @@ func (h *Management) latestAIGeneration(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, 200, items[0])
+}
+
+func (h *Management) queueAIGeneration(w http.ResponseWriter, r *http.Request) {
+	if !h.AIEnabled {
+		writeError(w, http.StatusServiceUnavailable, "ai_disabled")
+		return
+	}
+	now := time.Now()
+	if h.AILocation != nil {
+		now = now.In(h.AILocation)
+	}
+	slot := now
+	if h.AIPublishTime != "" {
+		at, err := time.Parse("15:04", h.AIPublishTime)
+		if err != nil {
+			managementError(w, err)
+			return
+		}
+		slot = time.Date(now.Year(), now.Month(), now.Day(), at.Hour(), at.Minute(), 0, 0, now.Location())
+		if !slot.After(now) {
+			slot = slot.AddDate(0, 0, 1)
+		}
+	}
+	id, err := learningcontent.NewPostgresRepository(h.Pool).QueueGeneration(r.Context(), slot, administratorID(r))
+	if err != nil {
+		managementError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]int64{"job_id": id})
 }
 
 func (h *Management) regenerateAIJob(w http.ResponseWriter, r *http.Request) {

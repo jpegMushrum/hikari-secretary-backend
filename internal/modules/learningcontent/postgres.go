@@ -74,15 +74,30 @@ func (r *PostgresRepository) ScheduleManual(ctx context.Context, draft domain.Sc
 	defer tx.Rollback(ctx)
 	// Reserve the job before locking its publication, as ReplaceQueuedTopic
 	// and Complete do. An existing source key retains its original time slot.
+	if _, err := tx.Exec(ctx, "SELECT id FROM ai_topic_settings WHERE id=1 FOR SHARE"); err != nil {
+		return 0, err
+	}
 	var jobID int64
 	var linkedID *int64
-	err = tx.QueryRow(ctx, `INSERT INTO ai_topic_jobs(scheduled_for,status,next_attempt_at,prompt_version)
+	err = tx.QueryRow(ctx, `INSERT INTO ai_topic_jobs(scheduled_for,status,next_attempt_at,prompt_version,automatic)
 		VALUES(COALESCE((SELECT scheduled_at FROM publications WHERE source_key=NULLIF($1,'')), $2),
-			'pending',NOW(),'backend-v1')
-		ON CONFLICT(scheduled_for) DO UPDATE SET scheduled_for=EXCLUDED.scheduled_for
+			'pending',NOW(),'backend-v1',FALSE)
+		ON CONFLICT(scheduled_for) WHERE NOT slot_released DO UPDATE SET automatic=false,paused_by_automation=false
 		RETURNING id,publication_id`, draft.SourceKey, draft.ScheduledAt).Scan(&jobID, &linkedID)
 	if err != nil {
 		return 0, err
+	}
+	if linkedID != nil {
+		var replay bool
+		err := tx.QueryRow(ctx, `SELECT status='scheduled' AND source_key IS NOT DISTINCT FROM NULLIF($2,'')
+			FROM publications WHERE id=$1`, *linkedID, draft.SourceKey).Scan(&replay)
+		if err != nil {
+			return 0, err
+		}
+		if !replay || draft.SourceKey == "" {
+			return 0, domain.ErrInvalidState
+		}
+		return *linkedID, nil
 	}
 	id, err := publishing.CreateScheduledTx(ctx, tx, draft)
 	if err != nil {
@@ -98,9 +113,6 @@ func (r *PostgresRepository) ScheduleManual(ctx context.Context, draft domain.Sc
 	}
 	if replay {
 		return id, nil
-	}
-	if linkedID != nil {
-		return 0, domain.ErrInvalidState
 	}
 	if err = saveTopic(ctx, tx, jobID, id, topic); err != nil {
 		return 0, err
@@ -144,15 +156,23 @@ type Job struct {
 
 func (r *PostgresRepository) Enqueue(ctx context.Context, scheduled time.Time) (int64, error) {
 	var id int64
-	err := r.pool.QueryRow(ctx, `INSERT INTO ai_topic_jobs(scheduled_for,status,next_attempt_at,prompt_version) VALUES($1,'pending',NOW(),'backend-v1') ON CONFLICT(scheduled_for) DO UPDATE SET updated_at=NOW() RETURNING id`, scheduled).Scan(&id)
+	// Serialize the eligibility check with a settings change, including when
+	// the slot does not have a job yet.
+	err := r.pool.QueryRow(ctx, `INSERT INTO ai_topic_jobs(scheduled_for,status,next_attempt_at,prompt_version)
+		SELECT $1,'pending',NOW(),'backend-v1' FROM ai_topic_settings
+		WHERE id=1 AND automation_enabled AND (automation_resumed_at IS NULL OR $1>=automation_resumed_at) FOR SHARE
+		ON CONFLICT(scheduled_for) WHERE NOT slot_released DO NOTHING RETURNING id`, scheduled).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
+	}
 	return id, err
 }
 
 // LatestGenerationID excludes untouched scheduler placeholders. A requested
 // replacement remains the latest generation while it waits for a worker.
 const LatestGenerationID = `SELECT id FROM ai_topic_jobs
-	WHERE status <> 'pending' OR attempts > 0 OR regeneration_requested_by IS NOT NULL
-		OR topic IS NOT NULL OR publication_id IS NOT NULL
+	WHERE (status NOT IN ('pending','cancelled') OR attempts > 0 OR regeneration_requested_by IS NOT NULL
+		OR topic IS NOT NULL OR publication_id IS NOT NULL)
 	ORDER BY scheduled_for DESC, id DESC LIMIT 1`
 
 func (r *PostgresRepository) RequestRegeneration(ctx context.Context, jobID *int64, actor int64) (int64, error) {
@@ -197,6 +217,8 @@ func (r *PostgresRepository) Claim(ctx context.Context, automatic bool, lease ti
 	err := r.pool.QueryRow(ctx, `WITH candidate AS (
 		SELECT id FROM ai_topic_jobs WHERE status IN ('pending','retry','generating')
 		AND next_attempt_at<=NOW() AND ($1 OR regeneration_requested_by IS NOT NULL)
+		AND (publication_id IS NOT NULL OR NOT EXISTS (
+			SELECT 1 FROM publications WHERE status='scheduled' AND source='ai_daily_topic'))
 		ORDER BY next_attempt_at,id FOR UPDATE SKIP LOCKED LIMIT 1
 	) UPDATE ai_topic_jobs j SET status='generating', attempts=attempts+1,
 		next_attempt_at=NOW()+$2::interval,updated_at=NOW() FROM candidate c WHERE j.id=c.id
@@ -214,6 +236,11 @@ func (r *PostgresRepository) Complete(ctx context.Context, job *Job, draft domai
 		return err
 	}
 	defer tx.Rollback(ctx)
+	// QueueGeneration chooses between all existing queued publications and a
+	// new slot. Publish the new job-to-publication link atomically with that choice.
+	if _, err := tx.Exec(ctx, "SELECT id FROM ai_topic_settings WHERE id=1 FOR SHARE"); err != nil {
+		return err
+	}
 	var id int64
 	err = tx.QueryRow(ctx, `SELECT id FROM ai_topic_jobs WHERE id=$1 AND status='generating'
 		AND next_attempt_at=$2 FOR UPDATE`, job.ID, job.LeaseUntil).Scan(&id)

@@ -110,7 +110,7 @@ func loadAIConfig() (AIConfig, error) {
 	targetKey := strings.TrimSpace(os.Getenv("AI_TOPIC_TARGET_KEY"))
 	publish := strings.TrimSpace(os.Getenv("AI_TOPIC_AUTO_PUBLISH_TIME"))
 	if key == "" {
-		return AIConfig{}, nil
+		return AIConfig{Timezone: valueOrDefault("TIMEZONE", "Europe/Moscow")}, nil
 	}
 	if targetKey == "" {
 		return AIConfig{}, fmt.Errorf("AI_TOPIC_TARGET_KEY is required when DeepSeek is enabled")

@@ -1613,6 +1613,117 @@ paths:
         '401': {description: Невалидный или отсутствующий initData}
         '403': {description: Не администратор}
         '500': {description: Ошибка хранения}
+  /api/v1/admin/ai/automation:
+    get:
+      summary: Состояние ежедневной генерации ИИ
+      security: [{telegramInitData: []}]
+      responses:
+        '200':
+          description: Настройка автогенерации, доступность отмены и ID поста в очереди
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AIAutomation'}
+        '401': {description: Невалидный или отсутствующий initData}
+        '403': {description: Не администратор}
+        '500': {description: Ошибка хранения}
+    put:
+      summary: Включить или выключить ежедневную генерацию ИИ
+      description: Настройка сохраняется в PostgreSQL. Выключение сохраняет сегодняшний пост.
+      security: [{telegramInitData: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [enabled]
+              properties:
+                enabled: {type: boolean}
+      responses:
+        '200':
+          description: Обновлённое состояние ежедневной генерации
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AIAutomation'}
+        '400': {description: Некорректное тело или неизвестные поля}
+        '401': {description: Невалидный или отсутствующий initData}
+        '403': {description: Не администратор}
+        '409': {description: Генератор или расписание не настроены для включения автогенерации}
+        '500': {description: Ошибка хранения}
+  /api/v1/admin/ai/automation/cancel-today:
+    post:
+      summary: Отменить сегодняшний автоматический пост ИИ
+      description: Запрос без тела. Можно отменить и задание, которое ещё готовит материал. Настройка ежедневной генерации сохраняется.
+      security: [{telegramInitData: []}]
+      responses:
+        '200':
+          description: Состояние ежедневной генерации после отмены
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AIAutomation'}
+        '401': {description: Невалидный или отсутствующий initData}
+        '403': {description: Не администратор}
+        '409': {description: Нет сегодняшнего задания или публикации, доступных для отмены}
+        '500': {description: Ошибка хранения}
+  /api/v1/admin/ai/automation/cancel-queued:
+    post:
+      summary: Отменить выход последнего ИИ-поста в очереди
+      description: >
+        Отменяет запланированный ИИ-пост с наибольшим ID независимо от даты
+        и способа запуска, пока все доставки ожидают отправки или повторной
+        попытки. Отменяется и текущая подготовка замены материала этого поста.
+        Настройка ежедневной генерации сохраняется.
+      security: [{telegramInitData: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [publication_id]
+              properties:
+                publication_id: {type: integer, format: int64, minimum: 1, description: ID из queued_publication_id}
+      responses:
+        '200':
+          description: Состояние ежедневной генерации после отмены
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AIAutomation'}
+        '400': {description: Некорректное тело или ID публикации}
+        '401': {description: Невалидный или отсутствующий initData}
+        '403': {description: Не администратор}
+        '409': {description: ID не соответствует последнему ИИ-посту в очереди или отмена недоступна}
+        '500': {description: Ошибка хранения}
+  /api/v1/admin/ai/generations/queue:
+    post:
+      summary: Поставить новую генерацию ИИ в очередь
+      description: >
+        Запрос без тела. При выполнении задания используются сохранённые
+        уровень JLPT и комментарий.
+        У ближайшего ожидающего ИИ-поста сохраняются время отправки и цели.
+        При пустой очереди новое задание использует ближайшее время
+        AI_TOPIC_AUTO_PUBLISH_TIME в часовом поясе TIMEZONE или ставится
+        на отправку сразу после успешной генерации, если время не задано.
+        Ручная постановка доступна при выключенной автогенерации и сохраняет
+        её настройку.
+      security: [{telegramInitData: []}]
+      responses:
+        '202':
+          description: Задание принято в очередь
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [job_id]
+                properties:
+                  job_id: {type: integer, format: int64, minimum: 1}
+        '401': {description: Невалидный или отсутствующий initData}
+        '403': {description: Не администратор}
+        '409': {description: 'Выбранная публикация недоступна для замены, код invalid_state'}
+        '503': {description: 'Генератор не подключён, код ai_disabled'}
+        '500': {description: Ошибка хранения}
   /api/v1/admin/ai/history:
     get:
       summary: История заданий подготовки материалов ИИ
@@ -2011,6 +2122,18 @@ components:
         jlpt_level: {type: string, enum: [N5, N4, N3, N2, N1]}
         admin_comment: {type: [string, 'null'], maxLength: 500}
         enabled: {type: boolean, description: Ключ и конфигурация генератора заданы при запуске backend}
+    AIAutomation:
+      type: object
+      required: [enabled, configured, can_cancel_today, can_cancel_queued, queued_publication_id]
+      properties:
+        enabled: {type: boolean, description: Ежедневная генерация настроена и включена сохранённой настройкой}
+        configured: {type: boolean, description: Генератор настроен и задано AI_TOPIC_AUTO_PUBLISH_TIME}
+        can_cancel_today: {type: boolean, description: Сегодняшний автоматический пост можно отменить. День определяется TIMEZONE.}
+        can_cancel_queued: {type: boolean, description: Последний поставленный в очередь ИИ-пост можно отменить.}
+        queued_publication_id:
+          type: [integer, 'null']
+          format: int64
+          description: ID последнего поставленного в очередь ИИ-поста или null при недоступной отмене.
     AIJob:
       type: object
       required: [id, scheduled_for, status, attempts, topic, publication_id, publication_status, last_error, version_count, can_regenerate]

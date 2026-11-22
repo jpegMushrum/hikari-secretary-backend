@@ -108,15 +108,15 @@ func CreateScheduledTx(ctx context.Context, tx pgx.Tx, scheduled domain.Schedule
 	}
 
 	var id int64
-	var status string
+	var status, source string
 	err = tx.QueryRow(ctx, `
 		INSERT INTO publications(creator_telegram_id,text,entities,rich_message,source,source_key)
 		VALUES($1,$2,$3::jsonb,$4::jsonb,$5,NULLIF($6,''))
 		ON CONFLICT(source_key) DO UPDATE SET source_key=EXCLUDED.source_key
-		RETURNING id,status`,
+		RETURNING id,status,source`,
 		scheduled.CreatorTelegramID, scheduled.Text, string(entitiesJSON), rich,
 		scheduled.Source, scheduled.SourceKey,
-	).Scan(&id, &status)
+	).Scan(&id, &status, &source)
 	if err != nil {
 		return 0, err
 	}
@@ -148,15 +148,8 @@ func CreateScheduledTx(ctx context.Context, tx pgx.Tx, scheduled domain.Schedule
 			return 0, err
 		}
 	}
-	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(734001)`); err != nil {
+	if err = ReserveQueueSlots(ctx, tx, source, 1); err != nil {
 		return 0, err
-	}
-	var count int
-	if err = tx.QueryRow(ctx, `SELECT COUNT(*) FROM publications WHERE status='scheduled'`).Scan(&count); err != nil {
-		return 0, err
-	}
-	if count >= 5 {
-		return 0, domain.ErrPendingPublicationLimit
 	}
 	if _, err = tx.Exec(ctx, `UPDATE publications SET status='scheduled',scheduled_at=$2 WHERE id=$1`, id, scheduled.ScheduledAt); err != nil {
 		return 0, err
@@ -165,6 +158,21 @@ func CreateScheduledTx(ctx context.Context, tx pgx.Tx, scheduled domain.Schedule
 		return 0, err
 	}
 	return id, nil
+}
+
+func ReserveQueueSlots(ctx context.Context, tx pgx.Tx, source string, slots int) error {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(734001)`); err != nil {
+		return err
+	}
+	var count, aiCount int
+	if err := tx.QueryRow(ctx, `SELECT COUNT(*), COUNT(*) FILTER (WHERE source='ai_daily_topic')
+		FROM publications WHERE status='scheduled'`).Scan(&count, &aiCount); err != nil {
+		return err
+	}
+	if count+slots > 5 || (source == "ai_daily_topic" && aiCount+slots > 1) {
+		return domain.ErrPendingPublicationLimit
+	}
+	return nil
 }
 
 func (r *Repository) RecoverInterruptedDeliveries(ctx context.Context) error {
@@ -221,11 +229,8 @@ func (r *Repository) Schedule(ctx context.Context, publicationID int64, when tim
 		return false, err
 	}
 	defer tx.Rollback(ctx)
-	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(734001)`); err != nil {
-		return false, err
-	}
-	var status string
-	if err = tx.QueryRow(ctx, `SELECT status FROM publications WHERE id=$1 FOR UPDATE`, publicationID).Scan(&status); err != nil {
+	var status, source string
+	if err = tx.QueryRow(ctx, `SELECT status,source FROM publications WHERE id=$1 FOR UPDATE`, publicationID).Scan(&status, &source); err != nil {
 		return false, err
 	}
 	if status != "draft" {
@@ -238,12 +243,8 @@ func (r *Repository) Schedule(ctx context.Context, publicationID int64, when tim
 	if invalidEvent {
 		return false, nil
 	}
-	var count int
-	if err = tx.QueryRow(ctx, `SELECT COUNT(*) FROM publications WHERE status='scheduled'`).Scan(&count); err != nil {
+	if err = ReserveQueueSlots(ctx, tx, source, 1); err != nil {
 		return false, err
-	}
-	if count >= 5 {
-		return false, domain.ErrPendingPublicationLimit
 	}
 	var targets int
 	if err = tx.QueryRow(ctx, `SELECT COUNT(*) FROM publication_deliveries WHERE publication_id=$1`, publicationID).Scan(&targets); err != nil {
@@ -364,15 +365,23 @@ func (r *Repository) ClaimDue(ctx context.Context) (*domain.Delivery, error) {
 	defer tx.Rollback(ctx)
 	var d domain.Delivery
 	var entities, rich []byte
-	err = tx.QueryRow(ctx, `SELECT d.id,d.publication_id,p.creator_telegram_id,d.target_key,d.target_name,d.destination,d.message_thread_id,d.attempts,p.text,p.entities,p.rich_message,EXISTS(SELECT 1 FROM event_publication_references e WHERE e.external_publication_id=p.id::text AND e.published=FALSE) FROM publication_deliveries d JOIN publications p ON p.id=d.publication_id WHERE p.status='scheduled' AND d.status IN ('pending','retry') AND d.platform='telegram' AND p.scheduled_at<=NOW() AND d.next_attempt_at<=NOW() ORDER BY d.next_attempt_at,d.id FOR UPDATE SKIP LOCKED LIMIT 1`).Scan(&d.ID, &d.PublicationID, &d.CreatorTelegramID, &d.TargetKey, &d.TargetName, &d.Destination, &d.MessageThreadID, &d.Attempts, &d.Text, &entities, &rich, &d.EventEnabled)
+	err = tx.QueryRow(ctx, `SELECT d.id,d.publication_id,p.creator_telegram_id,d.target_key,d.target_name,d.destination,d.message_thread_id,d.attempts,p.text,p.entities,p.rich_message,EXISTS(SELECT 1 FROM event_publication_references e WHERE e.external_publication_id=p.id::text AND e.published=FALSE) FROM publication_deliveries d JOIN publications p ON p.id=d.publication_id WHERE p.status='scheduled' AND d.status IN ('pending','retry') AND d.platform='telegram' AND p.scheduled_at<=NOW() AND d.next_attempt_at<=NOW() AND NOT EXISTS (SELECT 1 FROM ai_topic_jobs j WHERE j.publication_id=p.id AND j.regeneration_requested_by IS NOT NULL AND j.status IN ('pending','generating','retry')) ORDER BY d.next_attempt_at,d.id FOR UPDATE SKIP LOCKED LIMIT 1`).Scan(&d.ID, &d.PublicationID, &d.CreatorTelegramID, &d.TargetKey, &d.TargetName, &d.Destination, &d.MessageThreadID, &d.Attempts, &d.Text, &entities, &rich, &d.EventEnabled)
 	if err != nil {
 		if err.Error() == "no rows in result set" {
 			return nil, tx.Commit(ctx)
 		}
 		return nil, err
 	}
-	if _, err = tx.Exec(ctx, `UPDATE publication_deliveries SET status='publishing' WHERE id=$1`, d.ID); err != nil {
+	// The candidate scan may have seen a pre-request snapshot immediately
+	// before obtaining the publication lock. Check again under that lock.
+	tag, err := tx.Exec(ctx, `UPDATE publication_deliveries SET status='publishing' WHERE id=$1
+		AND NOT EXISTS (SELECT 1 FROM ai_topic_jobs WHERE publication_id=$2
+			AND regeneration_requested_by IS NOT NULL AND status IN ('pending','generating','retry'))`, d.ID, d.PublicationID)
+	if err != nil {
 		return nil, err
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, tx.Commit(ctx)
 	}
 	_ = json.Unmarshal(entities, &d.Entities)
 	if len(rich) > 0 {

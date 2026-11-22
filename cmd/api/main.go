@@ -53,18 +53,15 @@ func main() {
 	eventsService := eventsapp.NewService(eventspostgres.NewRepository(pool))
 	publishingService := publishingapp.NewService(publishingpostgres.NewRepository(pool))
 	var aiService *learningcontent.Service
+	location, err := time.LoadLocation(cfg.AI.Timezone)
+	if err != nil {
+		logger.Error("invalid AI timezone", "error", err)
+		os.Exit(1)
+	}
 	if cfg.AI.Enabled {
 		provider := learningcontent.NewDeepSeekProvider(cfg.AI.APIKey, cfg.AI.Model, cfg.AI.BaseURL, cfg.AI.Timeout, cfg.AI.QuestionCount, cfg.AI.VocabularyCount, cfg.AI.GrammarCount)
 		repository := learningcontent.NewPostgresRepository(pool)
 		aiService = learningcontent.NewService(provider, repository, domain.Target{Key: cfg.AI.Target.Key, Name: cfg.AI.Target.Name, Destination: cfg.AI.Target.Destination, MessageThreadID: cfg.AI.Target.MessageThreadID}, cfg.AI.QuestionCount, cfg.AI.VocabularyCount, cfg.AI.GrammarCount)
-		location := time.UTC
-		if cfg.AI.PublishTime != "" {
-			location, err = time.LoadLocation(cfg.AI.Timezone)
-			if err != nil {
-				logger.Error("invalid AI timezone", "error", err)
-				os.Exit(1)
-			}
-		}
 		creator := int64(0)
 		for id := range cfg.AdminTelegramIDs {
 			if creator == 0 || id < creator {
@@ -73,6 +70,9 @@ func main() {
 		}
 		go learningcontent.NewWorker(repository, aiService, location, cfg.AI.PublishTime, creator, cfg.AI.MaxAttempts, cfg.AI.Timeout, logger).Run(ctx)
 		logger.Info("AI learning content enabled", "target", cfg.AI.Target.Key, "automatic", cfg.AI.PublishTime != "")
+	} else if err := learningcontent.NewPostgresRepository(pool).FailUnavailableManualGenerations(ctx); err != nil {
+		logger.Error("release publications awaiting disabled generator", "error", err)
+		os.Exit(1)
 	}
 	if err := publishingService.RecoverInterruptedDeliveries(ctx); err != nil {
 		logger.Error("recover interrupted publication deliveries", "error", err)
@@ -88,7 +88,8 @@ func main() {
 			serviceauth.NewValidator(cfg.BotServiceToken),
 			peopleService,
 			botapi.NewRouter(pool, interactionService, publishingService, aiService),
-			(&adminapi.Management{Pool: pool, Publications: publishingService, AIEnabled: cfg.AI.Enabled}).Router(adminapi.NewRouter(eventsService)),
+			(&adminapi.Management{Pool: pool, Publications: publishingService, AIEnabled: cfg.AI.Enabled,
+				AIAutomationConfigured: cfg.AI.Enabled && cfg.AI.PublishTime != "", AILocation: location, AIPublishTime: cfg.AI.PublishTime}).Router(adminapi.NewRouter(eventsService)),
 		),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,

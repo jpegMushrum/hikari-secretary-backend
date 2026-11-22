@@ -350,8 +350,19 @@ func TestConcurrentTopicSavesRejectDuplicate(t *testing.T) {
 			repo := learningcontent.NewPostgresRepository(pool)
 			posts := make([]int64, 2)
 			for i, title := range []string{"first original", "second original"} {
-				id, err := repo.ScheduleManual(ctx, domain.ScheduledDraft{Draft: domain.Draft{Source: "ai_daily_topic", SourceKey: title, Text: title, CreatorTelegramID: 42}, ScheduledAt: time.Now().UTC().Add(time.Duration(i) * time.Hour), Targets: []domain.Target{{Key: "club", Name: "Club", Destination: "test"}}}, learningcontent.Topic{Title: title, VocabularyTheme: title})
+				// Two legacy queued publications still allow independent replacements.
+				var id int64
+				err := pool.QueryRow(ctx, `INSERT INTO publications(creator_telegram_id,text,source,status,scheduled_at)
+					VALUES(42,$1,'ai_daily_topic','scheduled',$2) RETURNING id`, title, time.Now().UTC().Add(time.Duration(i)*time.Hour)).Scan(&id)
 				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := pool.Exec(ctx, `INSERT INTO ai_topic_jobs(scheduled_for,status,next_attempt_at,publication_id,topic)
+					SELECT scheduled_at,'scheduled',NOW(),id,jsonb_build_object('title',text,'vocabulary_theme',text) FROM publications WHERE id=$1`, id); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := pool.Exec(ctx, `INSERT INTO publication_deliveries(publication_id,target_key,target_name,destination)
+					VALUES($1,'club','Club','test')`, id); err != nil {
 					t.Fatal(err)
 				}
 				posts[i] = id

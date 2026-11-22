@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	publishing "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/adapters/postgres"
 )
 
 func (h *Handler) upcomingEvents(w http.ResponseWriter, r *http.Request) {
@@ -19,17 +20,7 @@ func (h *Handler) upcomingEvents(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.pool.Query(r.Context(), `
 		SELECT ref.external_publication_id::bigint,e.title,e.starts_at,e.ends_at,
 			er.id IS NOT NULL,COALESCE(er.reminders_enabled,FALSE),er.reminder_offset_minutes,
-			(SELECT 'https://t.me/' ||
-				CASE WHEN d.destination LIKE '@%' THEN substr(d.destination,2)
-					ELSE 'c/' || (-peer.dialog_id - 1000000000000)::text END ||
-				'/' || concat_ws('/',d.message_thread_id,d.external_id)
-			 FROM publication_deliveries d
-			 CROSS JOIN LATERAL (SELECT CASE WHEN d.destination ~ '^-[0-9]{13}$'
-				THEN d.destination::bigint END AS dialog_id) peer
-			 WHERE d.publication_id=ref.external_publication_id::bigint
-				AND d.platform='telegram' AND d.status='sent' AND d.external_id ~ '^[1-9][0-9]*$'
-				AND (d.destination ~ '^@[A-Za-z][A-Za-z0-9_]*$' OR peer.dialog_id BETWEEN -1997852516352 AND -1000000000001)
-			 ORDER BY (d.destination LIKE '@%') DESC,d.id LIMIT 1)
+			`+publishing.AnnouncementLinkSQL+`
 		FROM events e
 		JOIN event_publication_references ref ON ref.event_id=e.id
 		LEFT JOIN event_registrations er ON er.event_id=e.id AND er.status='registered'

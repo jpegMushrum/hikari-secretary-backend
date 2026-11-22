@@ -38,12 +38,19 @@ func NewRouter(
 	adminTelegramIDs map[int64]struct{},
 	botAuthenticator *serviceauth.Validator,
 	people PeopleService,
-	botAPI http.Handler,
+	botAPI, memberAPI http.Handler,
 	adminAPIs ...http.Handler,
 ) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", health)
 	mux.HandleFunc("GET /readyz", ready(database))
+	if memberAPI != nil {
+		mux.Handle("/api/v1/member/", requireTelegram(authenticator, func(w http.ResponseWriter, r *http.Request, identity telegramauth.Identity) {
+			_, admin := adminTelegramIDs[identity.TelegramID]
+			ctx := requestcontext.WithMember(r.Context(), requestcontext.MemberIdentity{Telegram: identity, IsAdmin: admin})
+			memberAPI.ServeHTTP(w, r.WithContext(ctx))
+		}))
+	}
 	mux.Handle("GET /api/v1/admin/me", requireAdmin(authenticator, adminTelegramIDs, http.HandlerFunc(currentAdministrator)))
 	mux.Handle("GET /api/v1/admin/people", requireAdmin(authenticator, adminTelegramIDs, http.HandlerFunc(listPeople(people))))
 	for _, adminAPI := range adminAPIs {
@@ -59,6 +66,16 @@ func NewRouter(
 }
 
 func requireAdmin(authenticator Authenticator, adminTelegramIDs map[int64]struct{}, next http.Handler) http.Handler {
+	return requireTelegram(authenticator, func(writer http.ResponseWriter, request *http.Request, identity telegramauth.Identity) {
+		if _, ok := adminTelegramIDs[identity.TelegramID]; !ok {
+			writeError(writer, 403, "forbidden")
+			return
+		}
+		next.ServeHTTP(writer, request.WithContext(requestcontext.WithAdministrator(request.Context(), identity)))
+	})
+}
+
+func requireTelegram(authenticator Authenticator, next func(http.ResponseWriter, *http.Request, telegramauth.Identity)) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		initData, ok := initDataFromAuthorization(request.Header.Get("Authorization"))
 		if !ok || authenticator == nil {
@@ -71,13 +88,7 @@ func requireAdmin(authenticator Authenticator, adminTelegramIDs map[int64]struct
 			writeError(writer, http.StatusUnauthorized, "unauthorized")
 			return
 		}
-		if _, ok := adminTelegramIDs[identity.TelegramID]; !ok {
-			writeError(writer, http.StatusForbidden, "forbidden")
-			return
-		}
-
-		ctx := requestcontext.WithAdministrator(request.Context(), identity)
-		next.ServeHTTP(writer, request.WithContext(ctx))
+		next(writer, request, identity)
 	})
 }
 

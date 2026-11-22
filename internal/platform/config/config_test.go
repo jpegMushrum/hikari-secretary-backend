@@ -91,6 +91,19 @@ func TestLoadAcceptsLegacyAdminIDsAlias(t *testing.T) {
 	}
 }
 
+func TestReminderListAcceptsEmptySeparators(t *testing.T) {
+	setRequiredEnvironment(t)
+	t.Setenv("REMINDER_OPTIONS_MINUTES", " 30, ,60,")
+	cfg, err := Load()
+	if err != nil || len(cfg.ReminderOptions) != 2 || cfg.ReminderOptions[0] != 30 || cfg.ReminderOptions[1] != 60 {
+		t.Fatalf("unexpected reminder options %v, err %v", cfg.ReminderOptions, err)
+	}
+	t.Setenv("REMINDER_OPTIONS_MINUTES", ", ,")
+	if _, err := Load(); err == nil {
+		t.Fatal("accepted empty reminder list")
+	}
+}
+
 func TestLoadConfiguresAIFromTargetFile(t *testing.T) {
 	setRequiredEnvironment(t)
 	file, err := os.CreateTemp(t.TempDir(), "targets-*.json")

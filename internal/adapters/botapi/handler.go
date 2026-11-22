@@ -993,38 +993,43 @@ func (h *Handler) register(writer http.ResponseWriter, request *http.Request) {
 		writeError(writer, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	var starts time.Time
-	err := h.pool.QueryRow(request.Context(), `SELECT e.starts_at FROM events e JOIN event_publication_references r ON r.event_id=e.id WHERE r.external_publication_id=$1 AND e.status='active' AND e.starts_at>NOW() AND r.published=TRUE`, strconv.FormatInt(publicationID, 10)).Scan(&starts)
+	ctx := request.Context()
+	tx, err := h.pool.Begin(ctx)
+	if err != nil {
+		writeError(writer, 500, "internal_error")
+		return
+	}
+	defer tx.Rollback(ctx)
+	var eventID, personID int64
+	err = tx.QueryRow(ctx, "SELECT event_id FROM event_publication_references WHERE external_publication_id=$1", strconv.FormatInt(publicationID, 10)).Scan(&eventID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		writeError(writer, http.StatusConflict, "event_unavailable")
+		writeError(writer, 409, "event_unavailable")
 		return
 	}
 	if err != nil {
-		writeError(writer, http.StatusInternalServerError, "internal_error")
+		writeError(writer, 500, "internal_error")
 		return
 	}
-	if body.ReminderOffsetMinutes != nil && (*body.ReminderOffsetMinutes <= 0 || !starts.After(time.Now().UTC().Add(time.Duration(*body.ReminderOffsetMinutes)*time.Minute))) {
-		writeError(writer, http.StatusBadRequest, "invalid_reminder")
+	err = tx.QueryRow(ctx, `SELECT p.id FROM people p JOIN telegram_identities ti ON ti.person_id=p.id WHERE ti.telegram_user_id=$1 AND p.is_russian_citizen IS NOT NULL AND p.is_itmo_student IS NOT NULL FOR NO KEY UPDATE OF p`, body.TelegramUserID).Scan(&personID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(writer, 409, "profile_incomplete")
 		return
 	}
-	var citizen, itmo *bool
-	if err := h.pool.QueryRow(request.Context(), `SELECT p.is_russian_citizen,p.is_itmo_student FROM people p JOIN telegram_identities ti ON ti.person_id=p.id WHERE ti.telegram_user_id=$1`, body.TelegramUserID).Scan(&citizen, &itmo); err != nil {
-		writeError(writer, http.StatusConflict, "profile_incomplete")
-		return
-	}
-	if citizen == nil || itmo == nil {
-		writeError(writer, http.StatusConflict, "profile_incomplete")
-		return
-	}
-	_, err = h.pool.Exec(request.Context(), `
-		INSERT INTO event_registrations(event_id,person_id,reminders_enabled,reminder_offset_minutes,status,registered_at)
-		SELECT r.event_id,p.id,$3,$4,'registered',NOW()
-		FROM event_publication_references r JOIN telegram_identities ti ON ti.telegram_user_id=$1 JOIN people p ON p.id=ti.person_id
-		WHERE r.external_publication_id=$2
-		ON CONFLICT(event_id,person_id) DO UPDATE SET reminders_enabled=EXCLUDED.reminders_enabled,reminder_offset_minutes=EXCLUDED.reminder_offset_minutes,status='registered',registered_at=NOW(),cancelled_at=NULL,reminder_sent_at=NULL,attendance_prompt_sent_at=NULL
-		WHERE event_registrations.status='cancelled'`, body.TelegramUserID, strconv.FormatInt(publicationID, 10), body.ReminderOffsetMinutes != nil, body.ReminderOffsetMinutes)
 	if err != nil {
-		writeError(writer, http.StatusInternalServerError, "internal_error")
+		writeError(writer, 500, "internal_error")
+		return
+	}
+	err = eventspostgres.RegisterTx(ctx, tx, eventID, personID, body.ReminderOffsetMinutes)
+	if errors.Is(err, eventspostgres.ErrRegistrationClosed) {
+		writeError(writer, 409, "event_unavailable")
+		return
+	}
+	if errors.Is(err, eventspostgres.ErrRegistrationReminder) {
+		writeError(writer, 400, "invalid_reminder")
+		return
+	}
+	if err != nil || tx.Commit(ctx) != nil {
+		writeError(writer, 500, "internal_error")
 		return
 	}
 	writeJSON(writer, http.StatusOK, map[string]any{"registered": true})
@@ -1218,7 +1223,7 @@ func (h *Handler) markReminderSent(writer http.ResponseWriter, request *http.Req
 }
 
 func (h *Handler) dueAttendancePrompts(writer http.ResponseWriter, request *http.Request) {
-	rows, err := h.pool.Query(request.Context(), `SELECT ti.telegram_user_id,r.external_publication_id::bigint,e.title FROM event_registrations er JOIN event_publication_references r ON r.event_id=er.event_id JOIN events e ON e.id=er.event_id JOIN telegram_identities ti ON ti.person_id=er.person_id WHERE er.status='registered' AND er.attendance_prompt_sent_at IS NULL AND e.status='active' AND e.ends_at<=NOW()`)
+	rows, err := h.pool.Query(request.Context(), `SELECT ti.telegram_user_id,r.external_publication_id::bigint,e.title FROM event_registrations er JOIN event_publication_references r ON r.event_id=er.event_id JOIN events e ON e.id=er.event_id JOIN telegram_identities ti ON ti.person_id=er.person_id WHERE er.status='registered' AND er.attendance_prompt_sent_at IS NULL AND NOT EXISTS (SELECT 1 FROM attendance a WHERE a.registration_id=er.id AND a.attended IS NOT NULL) AND e.status='active' AND e.ends_at<=NOW()`)
 	if err != nil {
 		writeError(writer, http.StatusInternalServerError, "internal_error")
 		return
@@ -1282,7 +1287,7 @@ func (h *Handler) recordAttendance(writer http.ResponseWriter, request *http.Req
 		writeError(writer, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	result, err := h.pool.Exec(request.Context(), `INSERT INTO attendance(registration_id,attended,recorded_at) SELECT er.id,$3,NOW() FROM event_registrations er JOIN event_publication_references r ON r.event_id=er.event_id JOIN telegram_identities ti ON ti.person_id=er.person_id JOIN events e ON e.id=er.event_id WHERE ti.telegram_user_id=$1 AND r.external_publication_id=$2 AND er.status='registered' AND e.status='active' AND e.ends_at<=NOW() ON CONFLICT(registration_id) DO UPDATE SET attended=EXCLUDED.attended,recorded_at=EXCLUDED.recorded_at`, body.TelegramUserID, strconv.FormatInt(body.PublicationID, 10), body.Attended)
+	result, err := h.pool.Exec(request.Context(), `INSERT INTO attendance(registration_id,attended,recorded_at) SELECT er.id,$3,NOW() FROM event_registrations er JOIN event_publication_references r ON r.event_id=er.event_id JOIN telegram_identities ti ON ti.person_id=er.person_id JOIN events e ON e.id=er.event_id WHERE ti.telegram_user_id=$1 AND r.external_publication_id=$2 AND er.status='registered' AND e.status='active' AND e.ends_at<=NOW() ON CONFLICT(registration_id) DO NOTHING`, body.TelegramUserID, strconv.FormatInt(body.PublicationID, 10), body.Attended)
 	if err != nil {
 		writeError(writer, http.StatusInternalServerError, "internal_error")
 		return
@@ -1304,7 +1309,11 @@ func (h *Handler) saveFeedback(writer http.ResponseWriter, request *http.Request
 	var eventID *int64
 	if body.PublicationID != nil {
 		var id int64
-		err := h.pool.QueryRow(ctx, `SELECT r.event_id FROM event_publication_references r JOIN event_registrations er ON er.event_id=r.event_id JOIN telegram_identities ti ON ti.person_id=er.person_id JOIN attendance a ON a.registration_id=er.id WHERE r.external_publication_id=$1 AND ti.telegram_user_id=$2 AND a.attended=TRUE`, strconv.FormatInt(*body.PublicationID, 10), body.TelegramUserID).Scan(&id)
+		err := h.pool.QueryRow(ctx, `SELECT r.event_id FROM event_publication_references r
+			JOIN events e ON e.id=r.event_id JOIN event_registrations er ON er.event_id=r.event_id
+			JOIN telegram_identities ti ON ti.person_id=er.person_id JOIN attendance a ON a.registration_id=er.id
+			WHERE r.external_publication_id=$1 AND ti.telegram_user_id=$2 AND a.attended=TRUE
+			AND er.status='registered' AND e.ends_at<=NOW() AND e.status<>'cancelled'`, strconv.FormatInt(*body.PublicationID, 10), body.TelegramUserID).Scan(&id)
 		if err != nil {
 			writeError(writer, http.StatusConflict, "feedback_event_unavailable")
 			return

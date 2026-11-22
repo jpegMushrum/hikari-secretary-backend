@@ -19,6 +19,7 @@ import (
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/people/application"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/people/domain"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/pagination"
+	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/requestcontext"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/serviceauth"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/telegramauth"
 )
@@ -60,7 +61,7 @@ func TestHealthzIsAlwaysAvailable(t *testing.T) {
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 
-	NewRouter(nil, nil, nil, nil, nil, nil).ServeHTTP(response, request)
+	NewRouter(nil, nil, nil, nil, nil, nil, nil).ServeHTTP(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d", response.Code, http.StatusOK)
@@ -82,7 +83,7 @@ func TestReadyzRequiresDatabase(t *testing.T) {
 			response := httptest.NewRecorder()
 			request := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 
-			NewRouter(test.pinger, nil, nil, nil, nil, nil).ServeHTTP(response, request)
+			NewRouter(test.pinger, nil, nil, nil, nil, nil, nil).ServeHTTP(response, request)
 
 			if response.Code != test.wantStatus {
 				t.Errorf("status = %d, want %d", response.Code, test.wantStatus)
@@ -94,7 +95,7 @@ func TestReadyzRequiresDatabase(t *testing.T) {
 func TestAdminEndpointRequiresTelegramAuthorization(t *testing.T) {
 	now := time.Now()
 	validator := telegramauth.NewValidator("test-bot-token", time.Hour)
-	router := NewRouter(nil, validator, map[int64]struct{}{123: {}}, nil, nil, nil)
+	router := NewRouter(nil, validator, map[int64]struct{}{123: {}}, nil, nil, nil, nil)
 
 	tests := []struct {
 		name          string
@@ -123,11 +124,51 @@ func TestAdminEndpointRequiresTelegramAuthorization(t *testing.T) {
 	}
 }
 
+func TestMemberAccessUsesSignedIdentityAndDoesNotGrantAdmin(t *testing.T) {
+	const token = "member-test-token"
+	var received requestcontext.MemberIdentity
+	member := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var ok bool
+		received, ok = requestcontext.Member(r.Context())
+		if !ok {
+			t.Fatal("missing verified member")
+		}
+		if _, adminContext := requestcontext.Administrator(r.Context()); adminContext {
+			t.Fatal("member request given administrator context")
+		}
+		w.WriteHeader(204)
+	})
+	router := NewRouter(nil, telegramauth.NewValidator(token, time.Hour), map[int64]struct{}{42: {}}, nil, nil, nil, member)
+	for _, tc := range []struct {
+		path, auth string
+		want       int
+		id         int64
+		admin      bool
+	}{
+		{"/api/v1/member/me", "", 401, 0, false},
+		{"/api/v1/member/profile", "tma forged", 401, 0, false},
+		{"/api/v1/member/me", "tma " + signedInitData(t, token, 43, time.Now()), 204, 43, false},
+		{"/api/v1/member/me", "tma " + signedInitData(t, token, 42, time.Now()), 204, 42, true},
+		{"/api/v1/admin/me", "tma " + signedInitData(t, token, 43, time.Now()), 403, 0, false},
+	} {
+		req := httptest.NewRequest("GET", tc.path, nil)
+		req.Header.Set("Authorization", tc.auth)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != tc.want {
+			t.Fatalf("%s: %d, want %d", tc.path, rec.Code, tc.want)
+		}
+		if tc.id != 0 && (received.Telegram.TelegramID != tc.id || received.IsAdmin != tc.admin) {
+			t.Fatal("incorrect identity/role")
+		}
+	}
+}
+
 func TestMountedAdminAPIUsesTelegramAuthorization(t *testing.T) {
 	now := time.Now()
 	validator := telegramauth.NewValidator("test-bot-token", time.Hour)
 	adminAPI := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
-	router := NewRouter(nil, validator, map[int64]struct{}{123: {}}, nil, nil, nil, adminAPI)
+	router := NewRouter(nil, validator, map[int64]struct{}{123: {}}, nil, nil, nil, nil, adminAPI)
 
 	unauthorized := httptest.NewRecorder()
 	router.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/api/v1/admin/events", nil))
@@ -151,7 +192,7 @@ func TestListPeopleRequiresAdministratorAndParsesQuery(t *testing.T) {
 		Items:      []application.PersonListItem{{ID: 17, DisplayName: "Hikari", TelegramUserID: 123, Visits: 4}},
 		TotalItems: 1,
 	}}
-	router := NewRouter(nil, validator, map[int64]struct{}{123: {}}, nil, service, nil)
+	router := NewRouter(nil, validator, map[int64]struct{}{123: {}}, nil, service, nil, nil)
 
 	t.Run("missing authorization", func(t *testing.T) {
 		response := httptest.NewRecorder()
@@ -217,7 +258,7 @@ func TestSyncTelegramIdentityRequiresBotServiceAuthorization(t *testing.T) {
 		Username:       "hikari",
 		DisplayName:    "Hikari ITMO",
 	}}
-	router := NewRouter(nil, nil, nil, serviceauth.NewValidator("service-secret"), service, nil)
+	router := NewRouter(nil, nil, nil, serviceauth.NewValidator("service-secret"), service, nil, nil)
 
 	t.Run("missing authorization", func(t *testing.T) {
 		response := httptest.NewRecorder()

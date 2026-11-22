@@ -20,6 +20,7 @@ type Config struct {
 	AdminTelegramIDs       map[int64]struct{}
 	BotServiceToken        string
 	AI                     AIConfig
+	ReminderOptions        []int
 }
 
 type Target struct {
@@ -92,7 +93,27 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	var options []int
+	seen := map[int]bool{}
+	for _, raw := range strings.Split(valueOrDefault("REMINDER_OPTIONS_MINUTES", "30,60,120,360,1440"), ",") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 2147483647 {
+			return Config{}, fmt.Errorf("invalid REMINDER_OPTIONS_MINUTES")
+		}
+		if !seen[n] {
+			options = append(options, n)
+			seen[n] = true
+		}
+	}
+	if len(options) == 0 {
+		return Config{}, fmt.Errorf("REMINDER_OPTIONS_MINUTES must include at least one reminder")
+	}
 	return Config{
+		ReminderOptions:        options,
 		Environment:            valueOrDefault("APP_ENV", "development"),
 		HTTPAddress:            valueOrDefault("HTTP_ADDRESS", ":8080"),
 		DatabaseURL:            databaseURL,

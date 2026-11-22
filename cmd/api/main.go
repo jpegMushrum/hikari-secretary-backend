@@ -13,6 +13,7 @@ import (
 
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/adapters/adminapi"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/adapters/botapi"
+	"github.com/jpegMushrum/hikari-secretary-backend/internal/adapters/memberapi"
 	eventspostgres "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/events/adapters/postgres"
 	eventsapp "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/events/application"
 	interactionspostgres "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/interactions/adapters/postgres"
@@ -88,6 +89,7 @@ func main() {
 			serviceauth.NewValidator(cfg.BotServiceToken),
 			peopleService,
 			botapi.NewRouter(pool, interactionService, publishingService, aiService),
+			memberapi.NewRouter(pool, cfg.ReminderOptions...),
 			(&adminapi.Management{Pool: pool, Publications: publishingService, AIEnabled: cfg.AI.Enabled,
 				AIAutomationConfigured: cfg.AI.Enabled && cfg.AI.PublishTime != "", AILocation: location, AIPublishTime: cfg.AI.PublishTime}).Router(adminapi.NewRouter(eventsService)),
 		),

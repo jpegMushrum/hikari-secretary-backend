@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/domain"
+	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/publicationmedia"
 	"image"
 	_ "image/jpeg"
 	_ "image/png"
@@ -20,12 +21,6 @@ import (
 
 var mediaIDPattern = regexp.MustCompile(`^[0-9a-f]{32}\.(jpg|png)$`)
 
-func mediaDirectory() string {
-	if path := os.Getenv("ADMIN_MEDIA_DIR"); path != "" {
-		return path
-	}
-	return "data/admin-media"
-}
 func (h *Management) uploadMedia(w http.ResponseWriter, r *http.Request) {
 	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 10<<20))
 	if err != nil {
@@ -54,11 +49,11 @@ func (h *Management) uploadMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := hex.EncodeToString(key) + suffix
-	if err = os.MkdirAll(mediaDirectory(), 0750); err != nil {
+	if err = os.MkdirAll(publicationmedia.Directory(), 0750); err != nil {
 		managementError(w, err)
 		return
 	}
-	if err = os.WriteFile(filepath.Join(mediaDirectory(), id), data, 0640); err != nil {
+	if err = os.WriteFile(filepath.Join(publicationmedia.Directory(), id), data, 0640); err != nil {
 		managementError(w, err)
 		return
 	}
@@ -71,7 +66,7 @@ func (h *Management) getMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Disposition", "inline")
-	http.ServeFile(w, r, filepath.Join(mediaDirectory(), id))
+	http.ServeFile(w, r, filepath.Join(publicationmedia.Directory(), id))
 }
 func configuredTargets() ([]domain.Target, error) {
 	path := os.Getenv("TARGETS_PATH")
@@ -162,7 +157,7 @@ func (h *Management) createPublication(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 400, "invalid_media")
 			return
 		}
-		path := filepath.Join(mediaDirectory(), id)
+		path := filepath.Join(publicationmedia.Directory(), id)
 		if _, err := os.Stat(path); err != nil {
 			writeError(w, 400, "invalid_media")
 			return

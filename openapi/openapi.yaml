@@ -1,14 +1,490 @@
 openapi: 3.1.0
 info:
   title: Hikari Secretary Backend API
-  version: 0.3.5
+  version: 0.4.0
   description: |
     Внутренний API платформы Hikari Secretary. Административные предметные
     endpoints требуют проверенные Telegram Mini App credentials и роль
-    администратора. Внутренние Bot API endpoints требуют отдельный service token.
+    администратора. Member API использует те же Telegram credentials и
+    определяет участника по подписанной личности Telegram. Внутренние Bot API
+    endpoints требуют отдельный service token.
 servers:
   - url: /
 paths:
+  /api/v1/member/me:
+    get:
+      summary: Текущий участник Telegram и признак роли администратора
+      security:
+        - telegramInitData: []
+      responses:
+        '200':
+          description: Запрос выполнен
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MemberIdentity' }
+        '401':
+          description: Нужна действительная Telegram initData (`unauthorized`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500':
+          description: Внутренняя ошибка (`internal_error`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /api/v1/member/profile:
+    get:
+      summary: Собственный профиль и настройка предложений об отзыве
+      security:
+        - telegramInitData: []
+      responses:
+        '200':
+          description: Запрос выполнен
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MemberProfile' }
+        '401':
+          description: Нужна действительная Telegram initData (`unauthorized`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500':
+          description: Внутренняя ошибка (`internal_error`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    put:
+      summary: Обновить обязательные поля своего профиля
+      security:
+        - telegramInitData: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [full_name, is_russian_citizen, is_itmo_student]
+              properties:
+                full_name: {type: string, minLength: 2, maxLength: 160, description: Длина после обрезки пробельных символов}
+                is_russian_citizen: {type: boolean}
+                is_itmo_student: {type: boolean}
+                feedback_enabled: {type: [boolean, 'null'], description: При пропуске или null сохраняется текущее значение}
+      responses:
+        '204':
+          description: Изменение сохранено
+        '400':
+          description: Некорректные параметры или тело запроса (`invalid_request`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          description: Нужна действительная Telegram initData (`unauthorized`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500':
+          description: Внутренняя ошибка (`internal_error`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    patch:
+      summary: Изменить личные настройки отзывов или напоминаний
+      security:
+        - telegramInitData: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              minProperties: 1
+              properties:
+                feedback_enabled: {type: boolean}
+                reminder_offset_minutes:
+                  $ref: '#/components/schemas/MemberReminderPreference'
+      responses:
+        '204':
+          description: Изменение сохранено
+        '400':
+          description: Некорректное тело или интервал напоминания (`invalid_request`, `invalid_reminder`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          description: Нужна действительная Telegram initData (`unauthorized`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500':
+          description: Внутренняя ошибка (`internal_error`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /api/v1/member/events:
+    get:
+      summary: Мероприятия с личным статусом записи и посещения
+      security:
+        - telegramInitData: []
+      parameters:
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/PageSize'}
+        - {name: view, in: query, schema: {type: string, enum: [upcoming, registered, all], default: upcoming}}
+        - {name: search, in: query, schema: {type: string, maxLength: 100, description: Подстрока названия или ID}}
+        - {name: sort, in: query, schema: {type: string, enum: [id, title, starts_at, ends_at, status, personal_status], default: starts_at}}
+        - {name: order, in: query, schema: {type: string, enum: [asc, desc], description: По умолчанию desc для all и asc для остальных представлений}}
+      responses:
+        '200':
+          description: Запрос выполнен
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MemberEventsPage' }
+        '400':
+          description: Некорректные параметры или тело запроса (`invalid_request`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          description: Нужна действительная Telegram initData (`unauthorized`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500':
+          description: Внутренняя ошибка (`internal_error`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /api/v1/member/events/{id}:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}
+    get:
+      summary: Карточка мероприятия с анонсом и доступными действиями
+      security:
+        - telegramInitData: []
+      responses:
+        '200':
+          description: Запрос выполнен
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MemberEventDetail' }
+        '400':
+          description: Некорректные параметры или тело запроса (`invalid_request`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          description: Нужна действительная Telegram initData (`unauthorized`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404':
+          description: Объект отсутствует или недоступен (`not_found`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500':
+          description: Внутренняя ошибка (`internal_error`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /api/v1/member/events/{id}/media/{position}:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}
+    get:
+      summary: Изображение опубликованного анонса по индексу с нуля
+      security:
+        - telegramInitData: []
+      parameters:
+        - {name: position, in: path, required: true, schema: {type: integer, format: int64, minimum: 0}}
+      responses:
+        '200':
+          description: Файл изображения
+          content:
+            'image/*':
+              schema: {type: string, format: binary}
+        '400':
+          description: Некорректные параметры или тело запроса (`invalid_request`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          description: Нужна действительная Telegram initData (`unauthorized`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404':
+          description: Объект отсутствует или недоступен (`not_found`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500':
+          description: Внутренняя ошибка (`internal_error`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /api/v1/member/events/{id}/registration:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}
+    post:
+      summary: Записаться на встречу, при необходимости одновременно заполнив профиль
+      description: Выбранное напоминание применяется к этой записи. Сохранённая настройка будущих встреч сохраняет своё значение.
+      security:
+        - telegramInitData: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reminder_offset_minutes]
+              properties:
+                reminder_offset_minutes: {type: [integer, 'null'], minimum: 1, description: Минуты до начала из доступных значений или null для отключения}
+                profile: {oneOf: [{ $ref: '#/components/schemas/MemberRegistrationProfile' }, {type: 'null'}]}
+      responses:
+        '204':
+          description: Изменение сохранено
+        '400':
+          description: Некорректное тело, время напоминания или профиль (`invalid_request`, `invalid_reminder`, `invalid_profile`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          description: Нужна действительная Telegram initData (`unauthorized`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404':
+          description: Объект отсутствует или недоступен (`not_found`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Запись недоступна или нужен профиль (`registration_unavailable`, `profile_incomplete`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500':
+          description: Внутренняя ошибка (`internal_error`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    patch:
+      summary: Изменить или отключить напоминание до начала встречи
+      description: Напоминание текущей записи и настройка для будущих встреч обновляются атомарно.
+      security:
+        - telegramInitData: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reminder_offset_minutes]
+              properties:
+                reminder_offset_minutes: {type: [integer, 'null'], minimum: 1, description: Минуты до начала из доступных значений или null для отключения}
+      responses:
+        '204':
+          description: Изменение сохранено
+        '400':
+          description: Некорректное тело или время напоминания (`invalid_request`, `invalid_reminder`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          description: Нужна действительная Telegram initData (`unauthorized`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404':
+          description: Объект отсутствует или недоступен (`not_found`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Управление записью недоступно (`registration_unavailable`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500':
+          description: Внутренняя ошибка (`internal_error`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      summary: Отменить свою запись до начала встречи
+      security:
+        - telegramInitData: []
+      responses:
+        '204':
+          description: Изменение сохранено
+        '400':
+          description: Некорректные параметры или тело запроса (`invalid_request`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          description: Нужна действительная Telegram initData (`unauthorized`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404':
+          description: Объект отсутствует или недоступен (`not_found`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Управление записью недоступно (`registration_unavailable`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500':
+          description: Внутренняя ошибка (`internal_error`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /api/v1/member/events/{id}/attendance:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}
+    put:
+      summary: Однократно отметить посещение завершившейся встречи по своей записи
+      security:
+        - telegramInitData: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [attended]
+              properties:
+                attended: {type: boolean}
+      responses:
+        '204':
+          description: Изменение сохранено
+        '400':
+          description: Некорректные параметры или тело запроса (`invalid_request`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          description: Нужна действительная Telegram initData (`unauthorized`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Отметка недоступна или уже сохранена (`attendance_unavailable`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500':
+          description: Внутренняя ошибка (`internal_error`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /api/v1/member/feedback:
+    get:
+      summary: Постраничная история собственных отзывов
+      security:
+        - telegramInitData: []
+      parameters:
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/PageSize'}
+        - {name: sort, in: query, schema: {type: string, enum: [created_at], default: created_at}}
+        - {name: order, in: query, schema: {type: string, enum: [asc, desc], default: desc}}
+      responses:
+        '200':
+          description: Запрос выполнен
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MemberFeedbackPage' }
+        '400':
+          description: Некорректные параметры или тело запроса (`invalid_request`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          description: Нужна действительная Telegram initData (`unauthorized`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500':
+          description: Внутренняя ошибка (`internal_error`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    post:
+      summary: Оставить общий отзыв или отзыв о встрече
+      description: Для отзыва о встрече нужна действующая запись участника на завершившуюся встречу. Отмена встречи исключает возможность отзыва о ней.
+      security:
+        - telegramInitData: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [text]
+              properties:
+                text: {type: string, minLength: 1, maxLength: 3000, description: Длина после обрезки пробельных символов}
+                event_id: {type: [integer, 'null'], format: int64, minimum: 1, description: ID встречи или null для общего отзыва}
+      responses:
+        '204':
+          description: Изменение сохранено
+        '400':
+          description: Некорректные параметры или тело запроса (`invalid_request`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          description: Нужна действительная Telegram initData (`unauthorized`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404':
+          description: Объект отсутствует или недоступен (`not_found`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500':
+          description: Внутренняя ошибка (`internal_error`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /api/v1/member/feedback/{id}:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}
+    delete:
+      summary: Удалить собственный отзыв
+      security:
+        - telegramInitData: []
+      responses:
+        '204':
+          description: Изменение сохранено
+        '400':
+          description: Некорректные параметры или тело запроса (`invalid_request`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          description: Нужна действительная Telegram initData (`unauthorized`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404':
+          description: Объект отсутствует или недоступен (`not_found`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500':
+          description: Внутренняя ошибка (`internal_error`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
   /healthz:
     get:
       summary: Проверка работоспособности процесса
@@ -2095,6 +2571,98 @@ components:
         format: int64
         minimum: 1
   schemas:
+    MemberIdentity:
+      type: object
+      required: [telegram_id, first_name, last_name, username, is_admin]
+      properties:
+        telegram_id: {type: integer, format: int64, minimum: 1}
+        first_name: {type: string}
+        last_name: {type: string}
+        username: {type: string}
+        is_admin: {type: boolean}
+    MemberProfile:
+      type: object
+      required: [full_name, is_russian_citizen, is_itmo_student, feedback_enabled, reminder_offset_minutes]
+      properties:
+        full_name: {type: [string, 'null']}
+        is_russian_citizen: {type: [boolean, 'null']}
+        is_itmo_student: {type: [boolean, 'null']}
+        feedback_enabled: {type: boolean}
+        reminder_offset_minutes:
+          $ref: '#/components/schemas/MemberReminderPreference'
+    MemberReminderPreference:
+      type: [integer, 'null']
+      minimum: 1
+      description: Предпочтительный интервал из REMINDER_OPTIONS_MINUTES или null для записи без напоминания.
+    MemberRegistrationProfile:
+      additionalProperties: false
+      type: object
+      required: [full_name, is_russian_citizen, is_itmo_student]
+      properties:
+        full_name: {type: string, minLength: 2, maxLength: 160, description: Длина после обрезки пробельных символов}
+        is_russian_citizen: {type: boolean}
+        is_itmo_student: {type: boolean}
+    MemberEvent:
+      type: object
+      required: [id, title, starts_at, ends_at, status, personal_status]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        title: {type: string}
+        starts_at: {type: string, format: date-time}
+        ends_at: {type: string, format: date-time}
+        status: {type: string, enum: [active, completed, cancelled]}
+        personal_status: {type: string, enum: [not_registered, registered, unmarked, attended, missed]}
+    MemberEventDetail:
+      allOf:
+        - $ref: '#/components/schemas/MemberEvent'
+        - type: object
+          required: [announcement, announcement_url, can_register, can_manage_registration, can_mark_attendance, can_leave_feedback, profile_complete, reminder_options, reminder_offset_minutes, preferred_reminder_offset_minutes]
+          properties:
+            announcement: {oneOf: [{ $ref: '#/components/schemas/MemberAnnouncement' }, {type: 'null'}]}
+            announcement_url: {type: [string, 'null'], format: uri}
+            can_register: {type: boolean}
+            can_manage_registration: {type: boolean}
+            can_mark_attendance: {type: boolean}
+            can_leave_feedback: {type: boolean, description: Участник записан на завершившуюся встречу и встреча не отменена}
+            profile_complete: {type: boolean}
+            reminder_options: {type: array, items: {type: integer, minimum: 1}}
+            reminder_offset_minutes: {type: [integer, 'null'], minimum: 1, description: Минуты до начала из доступных значений или null для отключения}
+            preferred_reminder_offset_minutes:
+              $ref: '#/components/schemas/MemberReminderPreference'
+    MemberAnnouncement:
+      type: object
+      required: [id, text, entities, rich_message, media]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        text: {type: string}
+        entities: {description: Поля форматирования текста для предпросмотра анонса}
+        rich_message: {description: Блоки содержимого и оформления для предпросмотра анонса}
+        media: {type: array, items: {type: object, required: [position], properties: {position: {type: integer, minimum: 0}}}}
+    MemberEventsPage:
+      type: object
+      required: [items, page, filters, sort]
+      properties:
+        items: {type: array, items: { $ref: '#/components/schemas/MemberEvent' }}
+        page: { $ref: '#/components/schemas/PageMetadata' }
+        filters: {type: object, required: [view, search], properties: {view: {type: string, enum: [upcoming, registered, all]}, search: {type: string}}}
+        sort: {type: object, required: [field, order], properties: {field: {type: string, enum: [id, title, starts_at, ends_at, status, personal_status]}, order: {type: string, enum: [asc, desc]}}}
+    MemberFeedback:
+      type: object
+      required: [id, text, event_id, event_title, created_at]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        text: {type: string}
+        event_id: {type: [integer, 'null'], format: int64}
+        event_title: {type: [string, 'null']}
+        created_at: {type: string, format: date-time}
+    MemberFeedbackPage:
+      type: object
+      required: [items, page, sort, filters]
+      properties:
+        items: {type: array, items: { $ref: '#/components/schemas/MemberFeedback' }}
+        page: { $ref: '#/components/schemas/PageMetadata' }
+        sort: {type: object, required: [field, order], properties: {field: {type: string, const: created_at}, order: {type: string, enum: [asc, desc]}}}
+        filters: {type: object, maxProperties: 0}
     BotUpcomingEvent:
       type: object
       required: [post_id, title, text, starts_at, ends_at, registered, reminders_enabled, reminder_offset_minutes, announcement_url]

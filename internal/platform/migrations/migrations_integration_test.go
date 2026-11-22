@@ -51,8 +51,8 @@ func TestRunAppliesAllMigrationsToAnEmptySchema(t *testing.T) {
 	if err = conn.QueryRow(ctx, "SELECT COUNT(*) FROM schema_migrations").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 12 {
-		t.Fatalf("applied migrations = %d, want 12", count)
+	if count != 13 {
+		t.Fatalf("applied migrations = %d, want 13", count)
 	}
 
 	for _, table := range []string{

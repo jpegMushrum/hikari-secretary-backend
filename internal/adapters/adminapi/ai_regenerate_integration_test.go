@@ -309,16 +309,7 @@ func TestManualSchedulingReplayPreservesReplacement(t *testing.T) {
 	waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	go func() { replay, err := repo.ScheduleManual(waitCtx, draft, first); results <- scheduled{replay, err} }()
-	for {
-		var waiting bool
-		if err = held.QueryRow(waitCtx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)))`, pid).Scan(&waiting); err != nil {
-			t.Fatal(err)
-		}
-		if waiting {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitForBlockedSession(t, waitCtx, held, pid)
 	if _, err = held.Exec(ctx, "SELECT id FROM publications WHERE id=$1 FOR UPDATE NOWAIT", id); err != nil {
 		t.Fatal(err)
 	}

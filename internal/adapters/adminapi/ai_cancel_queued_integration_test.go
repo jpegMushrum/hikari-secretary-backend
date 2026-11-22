@@ -107,16 +107,7 @@ func TestCancelQueuedRechecksClaimAfterWaitingForPublisher(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() { done <- learningcontent.NewPostgresRepository(pool).CancelQueued(ctx, 7, 42) }()
-	for {
-		var waiting bool
-		if err := claim.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)))", pid).Scan(&waiting); err != nil {
-			t.Fatal(err)
-		}
-		if waiting {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitForBlockedSession(t, ctx, claim, pid)
 	if _, err := claim.Exec(ctx, "UPDATE publication_deliveries SET status='publishing' WHERE publication_id=7"); err != nil {
 		t.Fatal(err)
 	}

@@ -153,6 +153,25 @@ func TestDailyAutomationRevokesLeaseAndRespectsDeliveryClaim(t *testing.T) {
 	}
 }
 
+func waitForBlockedSession(t *testing.T, ctx context.Context, holder pgx.Tx, holderPID int) {
+	t.Helper()
+	// pg_stat_activity can retain the holder's initial snapshot and omit a
+	// connection opened later. pg_locks reflects current lock requests.
+	const query = `SELECT EXISTS (
+		SELECT 1 FROM pg_locks WHERE NOT granted AND $1 = ANY(pg_blocking_pids(pid))
+	)`
+	for {
+		var waiting bool
+		if err := holder.QueryRow(ctx, query, holderPID).Scan(&waiting); err != nil {
+			t.Fatalf("waiting for a session blocked by PID %d: %v", holderPID, err)
+		}
+		if waiting {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestCancelTodayWaitsForPublicationBeingLinked(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -175,16 +194,7 @@ func TestCancelTodayWaitsForPublicationBeingLinked(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() { done <- repo.CancelToday(ctx, today, 42) }()
-	for {
-		var waiting bool
-		if err := held.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)))`, pid).Scan(&waiting); err != nil {
-			t.Fatal(err)
-		}
-		if waiting {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitForBlockedSession(t, ctx, held, pid)
 	if _, err := held.Exec(ctx, `INSERT INTO publications(id,creator_telegram_id,source,status,scheduled_at)
 		VALUES(55,42,'ai_daily_topic','scheduled',NOW())`); err != nil {
 		t.Fatal(err)

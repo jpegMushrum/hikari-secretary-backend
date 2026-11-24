@@ -1,6 +1,6 @@
 # Hikari Secretary Backend
 
-![Версия 0.4.0](https://img.shields.io/badge/version-v0.4.0-6A5ACD)
+![Версия 0.5.0](https://img.shields.io/badge/version-v0.5.0-6A5ACD)
 ![Go](https://img.shields.io/badge/Go-1.27-00ADD8?logo=go&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-18-4169E1?logo=postgresql&logoColor=white)
 
@@ -26,6 +26,14 @@ Member API обслуживает профиль, мероприятия с ли
 напоминания, отметку посещения и собственные отзывы. Контракт описан в
 [OpenAPI](openapi/openapi.yaml), правила доступа и сценарии описаны
 в [руководстве по Member API](docs/member-api.md).
+
+Сезоны «Тайного Санты» живут в PostgreSQL. Backend проверяет назначения,
+права и состояние сезона, ведёт аудит административных действий и ставит
+личные уведомления в outbox. Команда `/app/api santa-start` в контейнере
+готовит сезон для настройки в miniapp. Повторный вызов использует текущий
+незавершённый сезон. Команда `/app/api santa-close SEASON_ID` архивирует
+сезон с указанным номером. На локальном стенде тестовый сброс из панели
+архивирует текущий сезон и сохраняет его настройки для нового.
 
 Python-бот направляет в этот сервис профили, мероприятия, регистрации,
 посещаемость, отзывы, напоминания, публикации и временные диалоги. Генерация,

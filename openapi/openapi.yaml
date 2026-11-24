@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hikari Secretary Backend API
-  version: 0.4.0
+  version: 0.5.0
   description: |
     Внутренний API платформы Hikari Secretary. Административные предметные
     endpoints требуют проверенные Telegram Mini App credentials и роль
@@ -11,6 +11,113 @@ info:
 servers:
   - url: /
 paths:
+  /api/v1/member/santa/visibility:
+    get:
+      summary: Видимость сезонного пункта в меню участника
+      security: [{ telegramInitData: [] }]
+      responses:
+        '200':
+          description: Запрос выполнен
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SantaVisibility' }
+        '401': { $ref: '#/components/responses/SantaUnauthorized' }
+        '500': { $ref: '#/components/responses/SantaError' }
+  /api/v1/member/santa:
+    get:
+      summary: Моё участие и назначение в открытом сезоне
+      security: [{ telegramInitData: [] }]
+      responses:
+        '200':
+          description: Запрос выполнен
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SantaMemberView' }
+        '401': { $ref: '#/components/responses/SantaUnauthorized' }
+        '404': { $ref: '#/components/responses/SantaNotFound' }
+        '500': { $ref: '#/components/responses/SantaError' }
+    post:
+      summary: Изменение собственного участия в Тайном Санте
+      security: [{ telegramInitData: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SantaMemberCommand' }
+      responses:
+        '204': { description: Команда выполнена }
+        '400': { $ref: '#/components/responses/SantaInvalid' }
+        '401': { $ref: '#/components/responses/SantaUnauthorized' }
+        '404': { $ref: '#/components/responses/SantaNotFound' }
+        '409': { $ref: '#/components/responses/SantaConflict' }
+        '500': { $ref: '#/components/responses/SantaError' }
+  /api/v1/admin/santa/visibility:
+    get:
+      summary: Видимость сезонного пункта в меню администратора
+      security: [{ telegramInitData: [] }]
+      responses:
+        '200':
+          description: Запрос выполнен
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SantaVisibility' }
+        '401': { $ref: '#/components/responses/SantaUnauthorized' }
+        '403': { $ref: '#/components/responses/SantaForbidden' }
+        '500': { $ref: '#/components/responses/SantaError' }
+  /api/v1/admin/santa:
+    get:
+      summary: Настройки, участники и пары текущего сезона
+      security: [{ telegramInitData: [] }]
+      responses:
+        '200':
+          description: Запрос выполнен
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SantaAdminView' }
+        '401': { $ref: '#/components/responses/SantaUnauthorized' }
+        '403': { $ref: '#/components/responses/SantaForbidden' }
+        '404': { $ref: '#/components/responses/SantaNotFound' }
+        '500': { $ref: '#/components/responses/SantaError' }
+    post:
+      summary: Управление активным сезоном Тайного Санты
+      security: [{ telegramInitData: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SantaAdminCommand' }
+      responses:
+        '204': { description: Команда выполнена }
+        '400': { $ref: '#/components/responses/SantaInvalid' }
+        '401': { $ref: '#/components/responses/SantaUnauthorized' }
+        '403': { $ref: '#/components/responses/SantaForbidden' }
+        '404': { $ref: '#/components/responses/SantaNotFound' }
+        '409': { $ref: '#/components/responses/SantaConflict' }
+        '500': { $ref: '#/components/responses/SantaError' }
+  /api/v1/admin/santa/reset:
+    post:
+      summary: Начать чистый сезон на локальном тестовом стенде
+      description: Маршрут доступен только в development со специальным локальным токеном Telegram. Архивирует указанный сезон и создаёт сезон в подготовке с прежними настройками.
+      security: [{ telegramInitData: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [season_id, revision]
+              properties:
+                season_id: {type: integer, format: int64, minimum: 1}
+                revision: {type: integer, format: int64, minimum: 1}
+      responses:
+        '204': { description: Тестовый сезон сброшен }
+        '400': { $ref: '#/components/responses/SantaInvalid' }
+        '401': { $ref: '#/components/responses/SantaUnauthorized' }
+        '403': { $ref: '#/components/responses/SantaForbidden' }
+        '404': { $ref: '#/components/responses/SantaNotFound' }
+        '409': { $ref: '#/components/responses/SantaConflict' }
+        '500': { $ref: '#/components/responses/SantaError' }
   /api/v1/member/me:
     get:
       summary: Текущий участник Telegram и признак роли администратора
@@ -2537,6 +2644,37 @@ paths:
         '401': {description: 'Требуется сервисный токен, код unauthorized'}
         '500': {description: 'Ошибка хранения, код internal_error'}
 components:
+  responses:
+    SantaInvalid:
+      description: Некорректная команда или параметры.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    SantaUnauthorized:
+      description: Нужна действительная Telegram initData.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    SantaForbidden:
+      description: Требуется роль администратора.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    SantaNotFound:
+      description: Сезон недоступен в этом режиме или объект не найден.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    SantaConflict:
+      description: Состав, версия сезона или назначение изменились либо операция недоступна.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    SantaError:
+      description: Внутренняя ошибка.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
   securitySchemes:
     telegramInitData:
       type: http
@@ -2571,6 +2709,130 @@ components:
         format: int64
         minimum: 1
   schemas:
+    SantaVisibility:
+      type: object
+      required: [visible]
+      description: Для скрытого сезона возвращается только visible=false. Открытый для роли сезон может дополнительно сообщать сроки и факт фиксации пар.
+      properties:
+        visible: {type: boolean}
+        confirmed: {type: boolean}
+        registration_until: {type: string, format: date-time}
+        exchange_at: {type: string, format: date-time}
+    SantaSeason:
+      type: object
+      required: [id, status, budget, exchange_at, registration_until, reminder_minutes, revision, confirmed]
+      properties:
+        id: {type: integer, format: int64}
+        status: {type: string, enum: [preparation, open, paused, closed]}
+        budget: {type: string}
+        exchange_at: {type: [string, 'null'], format: date-time}
+        registration_until: {type: [string, 'null'], format: date-time}
+        reminder_minutes: {type: integer, minimum: 1, maximum: 43200}
+        revision: {type: integer, format: int64}
+        confirmed: {type: boolean}
+    SantaPersonWishes:
+      type: object
+      required: [person_id, name, wishes]
+      properties:
+        person_id: {type: integer, format: int64}
+        name: {type: string}
+        wishes: {type: string}
+    SantaTelegramContact:
+      type: object
+      required: [telegram_id, username]
+      properties:
+        telegram_id: {type: integer, format: int64}
+        username: {type: [string, 'null']}
+    SantaRecipient:
+      allOf:
+        - {$ref: '#/components/schemas/SantaPersonWishes'}
+        - {$ref: '#/components/schemas/SantaTelegramContact'}
+    SantaParticipant:
+      allOf:
+        - {$ref: '#/components/schemas/SantaPersonWishes'}
+        - type: object
+          required: [status, attendance, gift, gift_description]
+          properties:
+            status: {type: string, enum: [active, exit_requested, excluded]}
+            attendance: {type: string, enum: [unknown, 'yes', 'no']}
+            gift: {type: string, enum: [unknown, ready, ordered, not_ready]}
+            gift_description: {type: string, maxLength: 2000, description: Личная заметка дарителя о подготовленном подарке. Доступна ему и организаторам. Сохраняется при замене подопечного.}
+    SantaAdminParticipant:
+      allOf:
+        - {$ref: '#/components/schemas/SantaParticipant'}
+        - {$ref: '#/components/schemas/SantaTelegramContact'}
+    SantaPair:
+      type: object
+      required: [giver_id, recipient_id]
+      additionalProperties: false
+      properties:
+        giver_id: {type: integer, format: int64, minimum: 1}
+        recipient_id: {type: integer, format: int64, minimum: 1}
+    SantaAdminView:
+      type: object
+      required: [season, participants, pairs]
+      properties:
+        season: {$ref: '#/components/schemas/SantaSeason'}
+        participants: {type: array, items: {$ref: '#/components/schemas/SantaAdminParticipant'}}
+        pairs: {type: array, items: {$ref: '#/components/schemas/SantaPair'}}
+    SantaMemberView:
+      type: object
+      required: [season, participation, recipient, draft_wishes]
+      properties:
+        season: {$ref: '#/components/schemas/SantaSeason'}
+        draft_wishes: {type: string, maxLength: 2000, description: Личные пожелания из отменённой записи этого сезона. Пустая строка при отсутствии черновика.}
+        participation:
+          oneOf:
+            - {$ref: '#/components/schemas/SantaParticipant'}
+            - {type: 'null'}
+        recipient:
+          description: Только действующий получатель этого дарителя после подтверждения пар.
+          oneOf:
+            - {$ref: '#/components/schemas/SantaRecipient'}
+            - {type: 'null'}
+    SantaAdminCommand:
+      description: Настройки требуют всех четырёх параметров. draft принимает весь вариант жеребьёвки. confirm фиксирует сохранённые пары. При exclude администратор указывает участника и, для подтверждённой жеребьёвки, полный новый список пар.
+      type: object
+      additionalProperties: false
+      required: [season_id, revision, action]
+      properties:
+        season_id: {type: integer, format: int64, minimum: 1}
+        revision: {type: integer, format: int64, minimum: 1, description: Версия из открытой панели администратора}
+        action: {type: string, enum: [settings, open, shuffle, draft, confirm, exclude]}
+        budget: {type: string, minLength: 1, maxLength: 200}
+        exchange_at: {type: string, format: date-time}
+        registration_until: {type: string, format: date-time}
+        reminder_minutes: {type: integer, minimum: 1, maximum: 43200}
+        person_id: {type: integer, format: int64, minimum: 1}
+        pairs: {type: array, items: {$ref: '#/components/schemas/SantaPair'}}
+      allOf:
+        - if: {properties: {action: {const: settings}}}
+          then: {required: [budget, exchange_at, registration_until, reminder_minutes]}
+        - if: {properties: {action: {const: draft}}}
+          then: {required: [pairs]}
+        - if: {properties: {action: {const: exclude}}}
+          then: {required: [person_id]}
+    SantaMemberCommand:
+      type: object
+      additionalProperties: false
+      required: [season_id, action]
+      properties:
+        season_id: {type: integer, format: int64, minimum: 1}
+        action: {type: string, enum: [join, wishes, cancel, attendance, gift, gift_description, request_exit, retract_exit]}
+        wishes: {type: string, minLength: 1, maxLength: 2000}
+        attendance: {type: string, enum: ['yes', 'no'], description: Ответ о посещении доступен после подтверждения жеребьёвки.}
+        gift: {type: string, enum: [ready, ordered, not_ready]}
+        gift_description: {type: string, maxLength: 2000, description: Описание подготовленного подарка после подтверждения пар. Пустая строка очищает описание.}
+        recipient_id: {type: integer, format: int64, minimum: 1, description: Текущий получатель для проверки актуальности данных о подарке}
+      allOf:
+        - if: {properties: {action: {enum: [join, wishes]}}}
+          then: {required: [wishes]}
+        - if: {properties: {action: {const: attendance}}}
+          then: {required: [attendance]}
+        - if: {properties: {action: {const: gift}}}
+          then: {required: [gift, recipient_id]}
+        - if: {properties: {action: {const: gift_description}}}
+          then: {required: [gift_description, recipient_id]}
     MemberIdentity:
       type: object
       required: [telegram_id, first_name, last_name, username, is_admin]

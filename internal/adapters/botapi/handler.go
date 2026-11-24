@@ -11,6 +11,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +25,7 @@ import (
 	learningcontent "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent"
 	publishing "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/application"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/domain"
+	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/santa"
 )
 
 const (
@@ -36,6 +38,7 @@ type Handler struct {
 	flows        *interactions.Service
 	publications *publishing.Service
 	ai           *learningcontent.Service
+	previewSanta bool
 }
 
 func NewRouter(pool *pgxpool.Pool, flows *interactions.Service, publications *publishing.Service, aiServices ...*learningcontent.Service) http.Handler {
@@ -43,7 +46,8 @@ func NewRouter(pool *pgxpool.Pool, flows *interactions.Service, publications *pu
 	if len(aiServices) > 0 {
 		ai = aiServices[0]
 	}
-	h := &Handler{pool: pool, flows: flows, publications: publications, ai: ai}
+	h := &Handler{pool: pool, flows: flows, publications: publications, ai: ai,
+		previewSanta: os.Getenv("APP_ENV") == "development" && os.Getenv("TELEGRAM_BOT_TOKEN") == "local-miniapp-only-not-a-telegram-token"}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /people/profile", h.upsertProfile)
 	mux.HandleFunc("GET /people/{telegram_id}", h.getProfile)
@@ -114,7 +118,10 @@ func (h *Handler) claimOutboxNotification(w http.ResponseWriter, r *http.Request
 	var topic string
 	var raw []byte
 	var attempts int
-	err = tx.QueryRow(r.Context(), `SELECT id,topic,payload,attempts FROM outbox WHERE topic='event.cancelled' AND status IN ('pending','failed') AND available_at<=NOW() ORDER BY available_at,id FOR UPDATE SKIP LOCKED LIMIT 1`).Scan(&id, &topic, &raw, &attempts)
+	err = tx.QueryRow(r.Context(), `SELECT id,topic,payload,attempts FROM outbox
+        WHERE (topic='event.cancelled' OR (topic='santa.notice' AND NOT $1::boolean))
+        AND status IN ('pending','failed') AND available_at<=NOW() AND (`+santa.NoticeDispatchableSQL+`)
+        ORDER BY available_at,id FOR UPDATE SKIP LOCKED LIMIT 1`, h.previewSanta).Scan(&id, &topic, &raw, &attempts)
 	if errors.Is(err, pgx.ErrNoRows) {
 		_ = tx.Commit(r.Context())
 		w.WriteHeader(http.StatusNoContent)

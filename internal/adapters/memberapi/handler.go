@@ -11,9 +11,11 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jpegMushrum/hikari-secretary-backend/internal/adapters/santaapi"
 	peoplepg "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/people/adapters/postgres"
 	peopleapp "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/people/application"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/people/domain"
+	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/santa"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/requestcontext"
 )
 
@@ -26,11 +28,18 @@ type personKey struct{}
 func personID(r *http.Request) int64 { return r.Context().Value(personKey{}).(int64) }
 
 func NewRouter(pool *pgxpool.Pool, reminderOptions ...int) http.Handler {
+	return NewRouterWithSanta(pool, nil, reminderOptions...)
+}
+
+func NewRouterWithSanta(pool *pgxpool.Pool, seasonal *santa.Service, reminderOptions ...int) http.Handler {
 	h := &Handler{pool: pool, reminders: reminderOptions}
 	if len(h.reminders) == 0 {
 		h.reminders = []int{30, 60, 120, 360, 1440}
 	}
 	mux := http.NewServeMux()
+	if seasonal != nil {
+		santaapi.MountMember(mux, seasonal, personID)
+	}
 	const base = "/api/v1/member"
 	mux.HandleFunc("GET "+base+"/me", func(w http.ResponseWriter, r *http.Request) {
 		identity, _ := requestcontext.Member(r.Context())

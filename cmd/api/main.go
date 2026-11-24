@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"syscall"
 	"time"
 	_ "time/tzdata"
@@ -24,6 +26,7 @@ import (
 	publishingpostgres "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/adapters/postgres"
 	publishingapp "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/application"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/domain"
+	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/santa"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/config"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/database"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/httpapi"
@@ -33,6 +36,13 @@ import (
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	if len(os.Args) > 1 {
+		if err := runSantaCommand(os.Args[1:], logger); err != nil {
+			logger.Error("Santa season command failed", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -53,6 +63,7 @@ func main() {
 	interactionService := interactionsapp.NewService(interactionspostgres.NewRepository(pool))
 	eventsService := eventsapp.NewService(eventspostgres.NewRepository(pool))
 	publishingService := publishingapp.NewService(publishingpostgres.NewRepository(pool))
+	santaService := santa.New(pool, slices.Sorted(maps.Keys(cfg.AdminTelegramIDs)))
 	var aiService *learningcontent.Service
 	location, err := time.LoadLocation(cfg.AI.Timezone)
 	if err != nil {
@@ -80,19 +91,28 @@ func main() {
 		os.Exit(1)
 	}
 
+	go runSantaReminderScheduler(ctx, santaService, logger)
+	localSanta := cfg.Environment == "development" && cfg.TelegramBotToken == "local-miniapp-only-not-a-telegram-token"
+	var router http.Handler = httpapi.NewRouter(
+		pool,
+		telegramauth.NewValidator(cfg.TelegramBotToken, cfg.TelegramInitDataMaxAge),
+		cfg.AdminTelegramIDs,
+		serviceauth.NewValidator(cfg.BotServiceToken),
+		peopleService,
+		botapi.NewRouter(pool, interactionService, publishingService, aiService),
+		memberapi.NewRouterWithSanta(pool, santaService, cfg.ReminderOptions...),
+		(&adminapi.Management{Pool: pool, Santa: santaService, LocalSantaReset: localSanta, Publications: publishingService, AIEnabled: cfg.AI.Enabled,
+			AIAutomationConfigured: cfg.AI.Enabled && cfg.AI.PublishTime != "", AILocation: location, AIPublishTime: cfg.AI.PublishTime}).Router(adminapi.NewRouter(eventsService)),
+	)
+	if localSanta {
+		mux := http.NewServeMux()
+		mux.Handle("GET /internal/dev/santa-notifications/{telegram_id}", localSantaInbox(pool, cfg.BotServiceToken))
+		mux.Handle("/", router)
+		router = mux
+	}
 	server := &http.Server{
-		Addr: cfg.HTTPAddress,
-		Handler: httpapi.NewRouter(
-			pool,
-			telegramauth.NewValidator(cfg.TelegramBotToken, cfg.TelegramInitDataMaxAge),
-			cfg.AdminTelegramIDs,
-			serviceauth.NewValidator(cfg.BotServiceToken),
-			peopleService,
-			botapi.NewRouter(pool, interactionService, publishingService, aiService),
-			memberapi.NewRouter(pool, cfg.ReminderOptions...),
-			(&adminapi.Management{Pool: pool, Publications: publishingService, AIEnabled: cfg.AI.Enabled,
-				AIAutomationConfigured: cfg.AI.Enabled && cfg.AI.PublishTime != "", AILocation: location, AIPublishTime: cfg.AI.PublishTime}).Router(adminapi.NewRouter(eventsService)),
-		),
+		Addr:              cfg.HTTPAddress,
+		Handler:           router,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		// Manual AI generation can legitimately take up to the configured

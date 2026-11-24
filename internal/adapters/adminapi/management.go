@@ -13,8 +13,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jpegMushrum/hikari-secretary-backend/internal/adapters/santaapi"
 	publishing "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/application"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/domain"
+	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/santa"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/database"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/pagination"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/requestcontext"
@@ -22,6 +24,8 @@ import (
 
 // Management is mounted behind the same administrator middleware as event reads.
 type Management struct {
+	Santa                  *santa.Service
+	LocalSantaReset        bool
 	Pool                   *pgxpool.Pool
 	Publications           *publishing.Service
 	AIEnabled              bool
@@ -32,6 +36,12 @@ type Management struct {
 
 func (h *Management) Router(events http.Handler) http.Handler {
 	mux := http.NewServeMux()
+	if h.Santa != nil {
+		santaapi.MountAdmin(mux, h.Santa)
+		if h.LocalSantaReset {
+			santaapi.MountLocalReset(mux, h.Santa)
+		}
+	}
 	mux.HandleFunc("GET /api/v1/admin/ai/settings", h.aiSettings)
 	mux.HandleFunc("GET /api/v1/admin/ai/automation", h.aiAutomation)
 	mux.HandleFunc("PUT /api/v1/admin/ai/automation", h.setAIAutomation)

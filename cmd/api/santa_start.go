@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/santa"
+	santapg "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/santa/adapters/postgres"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/config"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/database"
 )
@@ -37,7 +37,7 @@ func runSantaCommand(args []string, logger *slog.Logger) error {
 		return err
 	}
 	defer pool.Close()
-	service := santa.New(pool, nil)
+	service := santapg.NewRepository(pool, nil)
 	if closeID > 0 {
 		if err := service.Close(ctx, closeID); err != nil {
 			return err

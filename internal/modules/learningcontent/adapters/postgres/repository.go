@@ -1,4 +1,4 @@
-package learningcontent
+package postgres
 
 import (
 	"context"
@@ -8,32 +8,34 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent/application"
+	content "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent/domain"
 	publishing "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/adapters/postgres"
 	publishingapp "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/application"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/domain"
 )
 
-type PostgresRepository struct{ pool *pgxpool.Pool }
+type Repository struct{ pool *pgxpool.Pool }
 
-func NewPostgresRepository(pool *pgxpool.Pool) *PostgresRepository { return &PostgresRepository{pool} }
+func NewRepository(pool *pgxpool.Pool) *Repository { return &Repository{pool} }
 
-func (r *PostgresRepository) Preferences(ctx context.Context) (Options, error) {
+func (r *Repository) Preferences(ctx context.Context) (content.Options, error) {
 	return r.Settings(ctx)
 }
-func (r *PostgresRepository) History(ctx context.Context) ([]Topic, error) {
+func (r *Repository) History(ctx context.Context) ([]content.Topic, error) {
 	rows, err := r.pool.Query(ctx, `SELECT v.topic FROM ai_topic_versions v JOIN ai_topic_jobs j ON j.id=v.job_id
 		ORDER BY j.scheduled_for DESC, v.version DESC`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []Topic{}
+	items := []content.Topic{}
 	for rows.Next() {
 		var raw map[string]any
 		if err = rows.Scan(&raw); err != nil {
 			return nil, err
 		}
-		topic := Topic{}
+		topic := content.Topic{}
 		for _, key := range []string{"title", "title_ru", "theme", "topic"} {
 			if title, ok := raw[key].(string); ok && title != "" {
 				topic.Title = title
@@ -42,10 +44,10 @@ func (r *PostgresRepository) History(ctx context.Context) ([]Topic, error) {
 		}
 		topic.VocabularyTheme, _ = raw["vocabulary_theme"].(string)
 		for _, word := range historyElements(raw["vocabulary"], "japanese") {
-			topic.Vocabulary = append(topic.Vocabulary, VocabularyItem{Japanese: word})
+			topic.Vocabulary = append(topic.Vocabulary, content.VocabularyItem{Japanese: word})
 		}
 		for _, pattern := range historyElements(raw["grammar"], "pattern") {
-			topic.Grammar = append(topic.Grammar, GrammarPoint{Pattern: pattern})
+			topic.Grammar = append(topic.Grammar, content.GrammarPoint{Pattern: pattern})
 		}
 		items = append(items, topic)
 	}
@@ -66,7 +68,7 @@ func historyElements(raw any, field string) []string {
 	}
 	return elements
 }
-func (r *PostgresRepository) ScheduleManual(ctx context.Context, draft domain.ScheduledDraft, topic Topic) (int64, error) {
+func (r *Repository) ScheduleManual(ctx context.Context, draft domain.ScheduledDraft, topic content.Topic) (int64, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return 0, err
@@ -119,7 +121,7 @@ func (r *PostgresRepository) ScheduleManual(ctx context.Context, draft domain.Sc
 	}
 	return id, tx.Commit(ctx)
 }
-func (r *PostgresRepository) ReplaceQueuedTopic(ctx context.Context, publicationID int64, topic Topic) (bool, error) {
+func (r *Repository) ReplaceQueuedTopic(ctx context.Context, publicationID int64, topic content.Topic) (bool, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return false, err
@@ -133,7 +135,7 @@ func (r *PostgresRepository) ReplaceQueuedTopic(ctx context.Context, publication
 	if err != nil {
 		return false, err
 	}
-	text, rich := Render(topic)
+	text, rich := application.Render(topic)
 	if err = replaceQueuedMaterial(ctx, tx, publicationID, text, rich); errors.Is(err, domain.ErrInvalidState) {
 		return false, nil
 	} else if err != nil {
@@ -145,16 +147,7 @@ func (r *PostgresRepository) ReplaceQueuedTopic(ctx context.Context, publication
 	return true, tx.Commit(ctx)
 }
 
-type Job struct {
-	ID            int64
-	ScheduledFor  time.Time
-	Attempts      int
-	PublicationID *int64
-	RequestedBy   *int64
-	LeaseUntil    time.Time
-}
-
-func (r *PostgresRepository) Enqueue(ctx context.Context, scheduled time.Time) (int64, error) {
+func (r *Repository) Enqueue(ctx context.Context, scheduled time.Time) (int64, error) {
 	var id int64
 	// Serialize the eligibility check with a settings change, including when
 	// the slot does not have a job yet.
@@ -175,7 +168,7 @@ const LatestGenerationID = `SELECT id FROM ai_topic_jobs
 		OR topic IS NOT NULL OR publication_id IS NOT NULL)
 	ORDER BY scheduled_for DESC, id DESC LIMIT 1`
 
-func (r *PostgresRepository) RequestRegeneration(ctx context.Context, jobID *int64, actor int64) (int64, error) {
+func (r *Repository) RequestRegeneration(ctx context.Context, jobID *int64, actor int64) (int64, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return 0, err
@@ -212,8 +205,8 @@ func (r *PostgresRepository) RequestRegeneration(ctx context.Context, jobID *int
 
 // next_attempt_at doubles as the claim deadline while a job is generating.
 // Complete and MarkFailed check it so an expired worker cannot overwrite a newer result.
-func (r *PostgresRepository) Claim(ctx context.Context, automatic bool, lease time.Duration) (*Job, error) {
-	var job Job
+func (r *Repository) Claim(ctx context.Context, automatic bool, lease time.Duration) (*content.Job, error) {
+	var job content.Job
 	err := r.pool.QueryRow(ctx, `WITH candidate AS (
 		SELECT id FROM ai_topic_jobs WHERE status IN ('pending','retry','generating')
 		AND next_attempt_at<=NOW() AND ($1 OR regeneration_requested_by IS NOT NULL)
@@ -230,7 +223,7 @@ func (r *PostgresRepository) Claim(ctx context.Context, automatic bool, lease ti
 	return &job, err
 }
 
-func (r *PostgresRepository) Complete(ctx context.Context, job *Job, draft domain.ScheduledDraft, topic Topic) error {
+func (r *Repository) Complete(ctx context.Context, job *content.Job, draft domain.ScheduledDraft, topic content.Topic) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -271,7 +264,7 @@ func (r *PostgresRepository) Complete(ctx context.Context, job *Job, draft domai
 // All callers already hold the job and publication locks. Serialize this
 // final check with the archive write: two providers may have used the same
 // history before either response arrived. No network call runs under the lock.
-func saveTopic(ctx context.Context, tx pgx.Tx, jobID, publicationID int64, topic Topic) error {
+func saveTopic(ctx context.Context, tx pgx.Tx, jobID, publicationID int64, topic content.Topic) error {
 	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(734002)"); err != nil {
 		return err
 	}
@@ -291,7 +284,7 @@ func saveTopic(ctx context.Context, tx pgx.Tx, jobID, publicationID int64, topic
 			if err = rows.Scan(&title, &theme); err != nil {
 				return err
 			}
-			if err = topic.checkDuplicate(title, theme); err != nil {
+			if err = topic.CheckDuplicate(title, theme); err != nil {
 				return err
 			}
 		}
@@ -304,7 +297,7 @@ func saveTopic(ctx context.Context, tx pgx.Tx, jobID, publicationID int64, topic
 	return err
 }
 
-func (r *PostgresRepository) MarkFailed(ctx context.Context, job *Job, message string, retryAt *time.Time) error {
+func (r *Repository) MarkFailed(ctx context.Context, job *content.Job, message string, retryAt *time.Time) error {
 	status := "failed"
 	at := time.Now().UTC()
 	if retryAt != nil {
@@ -322,7 +315,7 @@ type FailureNotice struct {
 	Error        string    `json:"error"`
 }
 
-func (r *PostgresRepository) FailureNotices(ctx context.Context) ([]FailureNotice, error) {
+func (r *Repository) FailureNotices(ctx context.Context) ([]FailureNotice, error) {
 	rows, err := r.pool.Query(ctx, `SELECT id,scheduled_for,attempts,COALESCE(last_error,'') FROM ai_topic_jobs WHERE status='failed' AND regeneration_requested_by IS NULL AND failure_notified=FALSE ORDER BY updated_at`)
 	if err != nil {
 		return nil, err
@@ -339,7 +332,7 @@ func (r *PostgresRepository) FailureNotices(ctx context.Context) ([]FailureNotic
 	return items, rows.Err()
 }
 
-func (r *PostgresRepository) MarkFailureNotified(ctx context.Context, id int64) error {
+func (r *Repository) MarkFailureNotified(ctx context.Context, id int64) error {
 	_, err := r.pool.Exec(ctx, `UPDATE ai_topic_jobs SET failure_notified=TRUE,updated_at=NOW() WHERE id=$1 AND status='failed' AND regeneration_requested_by IS NULL`, id)
 	return err
 }

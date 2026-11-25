@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/santa"
+	santapg "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/santa/adapters/postgres"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/serviceauth"
 )
 
@@ -51,7 +51,7 @@ func localSantaInbox(pool *pgxpool.Pool, token string) http.HandlerFunc {
 		rows, err := pool.Query(r.Context(), `SELECT id, payload->>'text', payload->>'path', payload->>'profile_url' FROM outbox
             WHERE topic='santa.notice' AND payload->>'telegram_user_id'=$1 AND available_at<=NOW()
             AND aggregate_id IN (SELECT id FROM santa_seasons WHERE status<>'closed')
-            AND (`+santa.NoticeDispatchableSQL+`) ORDER BY id DESC LIMIT 30`, user)
+            AND (`+santapg.NoticeDispatchableSQL+`) ORDER BY id DESC LIMIT 30`, user)
 		if err != nil {
 			http.Error(w, "inbox unavailable", http.StatusInternalServerError)
 			return

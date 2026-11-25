@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent"
+	learningpostgres "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent/adapters/postgres"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/domain"
 )
 
@@ -20,14 +20,14 @@ func TestCancelQueuedAIPublicationUsesActualQueue(t *testing.T) {
 	pool := managementSortTestPool(t)
 	h := &Management{Pool: pool, AILocation: time.UTC, AIAutomationConfigured: true}
 	handler := h.Router(http.NotFoundHandler())
-	call := func(method, path, body string, want int) learningcontent.AutomationState {
+	call := func(method, path, body string, want int) learningpostgres.AutomationState {
 		t.Helper()
 		res := httptest.NewRecorder()
 		handler.ServeHTTP(res, httptest.NewRequest(method, "/api/v1/admin/ai/automation"+path, strings.NewReader(body)))
 		if res.Code != want {
 			t.Fatalf("%s %s: %d %s", method, path, res.Code, res.Body)
 		}
-		var state learningcontent.AutomationState
+		var state learningpostgres.AutomationState
 		if want == http.StatusOK {
 			if err := json.Unmarshal(res.Body.Bytes(), &state); err != nil {
 				t.Fatal(err)
@@ -106,7 +106,7 @@ func TestCancelQueuedRechecksClaimAfterWaitingForPublisher(t *testing.T) {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
-	go func() { done <- learningcontent.NewPostgresRepository(pool).CancelQueued(ctx, 7, 42) }()
+	go func() { done <- learningpostgres.NewRepository(pool).CancelQueued(ctx, 7, 42) }()
 	waitForBlockedSession(t, ctx, claim, pid)
 	if _, err := claim.Exec(ctx, "UPDATE publication_deliveries SET status='publishing' WHERE publication_id=7"); err != nil {
 		t.Fatal(err)
@@ -126,7 +126,7 @@ func TestQueueGenerationRejectsUnlinkedQueuedAI(t *testing.T) {
 		VALUES(12,42,'ai_daily_topic','scheduled',NOW()+interval '1 day')`); err != nil {
 		t.Fatal(err)
 	}
-	repo := learningcontent.NewPostgresRepository(pool)
+	repo := learningpostgres.NewRepository(pool)
 	slot := time.Now().Add(24 * time.Hour)
 	if _, err := repo.QueueGeneration(ctx, slot, 42); err != domain.ErrInvalidState {
 		t.Fatalf("created generation alongside unlinked AI: %v", err)

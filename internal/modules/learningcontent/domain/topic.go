@@ -1,4 +1,4 @@
-package learningcontent
+package domain
 
 import (
 	"fmt"
@@ -72,3 +72,13 @@ func (t Topic) Validate(questionCount, vocabularyCount, grammarCount int) error 
 }
 
 func normalize(value string) string { return strings.Join(strings.Fields(strings.ToLower(value)), " ") }
+
+func (t Topic) CheckDuplicate(title, vocabularyTheme string) error {
+	if title != "" && normalize(t.Title) == normalize(title) {
+		return fmt.Errorf("model repeated a conversation topic")
+	}
+	if vocabularyTheme != "" && normalize(t.VocabularyTheme) == normalize(vocabularyTheme) {
+		return fmt.Errorf("model repeated a vocabulary theme")
+	}
+	return nil
+}

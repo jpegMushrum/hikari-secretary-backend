@@ -13,7 +13,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent"
+	learningpostgres "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent/adapters/postgres"
+	learningdomain "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent/domain"
 	publishing "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/adapters/postgres"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/domain"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/requestcontext"
@@ -23,7 +24,7 @@ import (
 func TestQueueGenerationCoalescesRequestsAndFencesOldWorker(t *testing.T) {
 	ctx := context.Background()
 	pool := managementSortTestPool(t)
-	repo := learningcontent.NewPostgresRepository(pool)
+	repo := learningpostgres.NewRepository(pool)
 	slot := time.Now().Add(2 * time.Hour).UTC().Truncate(time.Minute)
 	id, err := repo.Enqueue(ctx, slot)
 	if err != nil {
@@ -50,7 +51,7 @@ func TestQueueGenerationCoalescesRequestsAndFencesOldWorker(t *testing.T) {
 	if err != nil || manual == nil || manual.ID != id || manual.RequestedBy == nil {
 		t.Fatalf("manual claim %v %v", manual, err)
 	}
-	if err := repo.Complete(ctx, old, domain.ScheduledDraft{}, learningcontent.Topic{}); !errors.Is(err, pgx.ErrNoRows) {
+	if err := repo.Complete(ctx, old, domain.ScheduledDraft{}, learningdomain.Topic{}); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("stale generation retained lease: %v", err)
 	}
 	if next, err := repo.QueueGeneration(ctx, slot, 42); err != nil || next != id {
@@ -64,7 +65,7 @@ func TestQueueGenerationCoalescesRequestsAndFencesOldWorker(t *testing.T) {
 func TestQueueGenerationReleasesOriginalWhenWorkerBecomesUnavailable(t *testing.T) {
 	ctx := context.Background()
 	pool := managementSortTestPool(t)
-	repo := learningcontent.NewPostgresRepository(pool)
+	repo := learningpostgres.NewRepository(pool)
 	_, err := pool.Exec(ctx, `INSERT INTO publications(id,creator_telegram_id,status,text,source,scheduled_at) VALUES (9,42,'scheduled','original','ai_daily_topic',NOW());
 	INSERT INTO publication_deliveries(publication_id,target_key,target_name,destination,next_attempt_at) VALUES(9,'club','Club','test',NOW());
 	INSERT INTO ai_topic_jobs(scheduled_for,status,publication_id,next_attempt_at,regeneration_requested_by) VALUES
@@ -89,7 +90,7 @@ func TestQueueGenerationReleasesOriginalWhenWorkerBecomesUnavailable(t *testing.
 func TestQueueNewGenerationKeepsHistoryAndReplacesQueuedPost(t *testing.T) {
 	ctx := context.Background()
 	pool := managementSortTestPool(t)
-	repo := learningcontent.NewPostgresRepository(pool)
+	repo := learningpostgres.NewRepository(pool)
 	publications := publishing.NewRepository(pool)
 	location := time.FixedZone("club", 3*60*60)
 	now := time.Now().In(location)
@@ -131,7 +132,7 @@ func TestQueueNewGenerationKeepsHistoryAndReplacesQueuedPost(t *testing.T) {
 		if err != nil || job == nil || job.ID != id || !job.ScheduledFor.Equal(slot) {
 			t.Fatalf("claim %v %v", job, err)
 		}
-		topic := learningcontent.Topic{Title: title, VocabularyTheme: title}
+		topic := learningdomain.Topic{Title: title, VocabularyTheme: title}
 		draft := domain.ScheduledDraft{Draft: domain.Draft{Text: title, CreatorTelegramID: 42, Source: "ai_daily_topic", SourceKey: "daily-topic-job:" + strconv.FormatInt(id, 10)}, ScheduledAt: slot, Targets: []domain.Target{{Key: "club", Name: "Club", Destination: "test"}}}
 		if err := repo.Complete(ctx, job, draft, topic); err != nil {
 			t.Fatal(err)

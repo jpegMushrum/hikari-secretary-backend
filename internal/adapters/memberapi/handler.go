@@ -15,7 +15,7 @@ import (
 	peoplepg "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/people/adapters/postgres"
 	peopleapp "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/people/application"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/people/domain"
-	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/santa"
+	santa "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/santa/application"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/requestcontext"
 )
 
@@ -31,7 +31,7 @@ func NewRouter(pool *pgxpool.Pool, reminderOptions ...int) http.Handler {
 	return NewRouterWithSanta(pool, nil, reminderOptions...)
 }
 
-func NewRouterWithSanta(pool *pgxpool.Pool, seasonal *santa.Service, reminderOptions ...int) http.Handler {
+func NewRouterWithSanta(pool *pgxpool.Pool, seasonal santa.Service, reminderOptions ...int) http.Handler {
 	h := &Handler{pool: pool, reminders: reminderOptions}
 	if len(h.reminders) == 0 {
 		h.reminders = []int{30, 60, 120, 360, 1440}

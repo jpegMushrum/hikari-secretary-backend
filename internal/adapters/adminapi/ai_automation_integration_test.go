@@ -13,24 +13,25 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent"
+	learningpostgres "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent/adapters/postgres"
+	learningdomain "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent/domain"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/domain"
 )
 
 func TestDailyAutomationPreservesTodayAndResumesOnlyFutureSlots(t *testing.T) {
 	ctx := context.Background()
 	pool := managementSortTestPool(t)
-	repo := learningcontent.NewPostgresRepository(pool)
+	repo := learningpostgres.NewRepository(pool)
 	h := &Management{Pool: pool, AIAutomationConfigured: true, AILocation: time.FixedZone("club", 3*3600)}
 	handler := h.Router(http.NotFoundHandler())
-	call := func(method, path, body string, code int) learningcontent.AutomationState {
+	call := func(method, path, body string, code int) learningpostgres.AutomationState {
 		t.Helper()
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, httptest.NewRequest(method, "/api/v1/admin/ai/automation"+path, strings.NewReader(body)))
 		if w.Code != code {
 			t.Fatalf("%s %s = %d: %s", method, path, w.Code, w.Body)
 		}
-		var state learningcontent.AutomationState
+		var state learningpostgres.AutomationState
 		if code == 200 {
 			if err := json.Unmarshal(w.Body.Bytes(), &state); err != nil {
 				t.Fatal(err)
@@ -110,7 +111,7 @@ func TestDailyAutomationPreservesTodayAndResumesOnlyFutureSlots(t *testing.T) {
 func TestDailyAutomationRevokesLeaseAndRespectsDeliveryClaim(t *testing.T) {
 	ctx := context.Background()
 	pool := managementSortTestPool(t)
-	repo := learningcontent.NewPostgresRepository(pool)
+	repo := learningpostgres.NewRepository(pool)
 	now := time.Now().UTC()
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	id, err := repo.Enqueue(ctx, today.AddDate(0, 0, 1))
@@ -130,7 +131,7 @@ func TestDailyAutomationRevokesLeaseAndRespectsDeliveryClaim(t *testing.T) {
 	if latest, err := repo.Claim(ctx, true, 2*time.Minute); err != nil || latest == nil || latest.ID != job.ID {
 		t.Fatalf("claim after resume: %v %v", latest, err)
 	}
-	if err := repo.Complete(ctx, job, domain.ScheduledDraft{}, learningcontent.Topic{}); !errors.Is(err, pgx.ErrNoRows) {
+	if err := repo.Complete(ctx, job, domain.ScheduledDraft{}, learningdomain.Topic{}); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("revoked claim passed lease validation: %v", err)
 	}
 	if err := repo.MarkFailed(ctx, job, "stale failure", nil); err != nil {
@@ -176,7 +177,7 @@ func TestCancelTodayWaitsForPublicationBeingLinked(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	pool := managementSortTestPool(t)
-	repo := learningcontent.NewPostgresRepository(pool)
+	repo := learningpostgres.NewRepository(pool)
 	now := time.Now().UTC()
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	id, err := repo.Enqueue(ctx, now)

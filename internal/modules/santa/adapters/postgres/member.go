@@ -1,4 +1,4 @@
-package santa
+package postgres
 
 import (
 	"context"
@@ -8,11 +8,13 @@ import (
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/santa/application"
+	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/santa/domain"
 )
 
-func (s *Service) MemberAction(ctx context.Context, personID int64, c MemberCommand) error {
+func (s *Repository) MemberAction(ctx context.Context, personID int64, c application.MemberCommand) error {
 	if personID <= 0 || c.SeasonID <= 0 {
-		return ErrInvalid
+		return domain.ErrInvalid
 	}
 	return pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		v, err := lockSeason(ctx, tx, c.SeasonID)
@@ -20,7 +22,7 @@ func (s *Service) MemberAction(ctx context.Context, personID int64, c MemberComm
 			return err
 		}
 		if v.Status != "open" {
-			return ErrNotFound
+			return domain.ErrNotFound
 		}
 		p, err := readParticipant(tx.QueryRow(ctx, "SELECT "+participantColumns+participantsFrom+" WHERE sp.season_id=$1 AND sp.person_id=$2", v.ID, personID))
 		found := !errors.Is(err, pgx.ErrNoRows)
@@ -28,27 +30,27 @@ func (s *Service) MemberAction(ctx context.Context, personID int64, c MemberComm
 			return err
 		}
 		if found && p.Status == "excluded" {
-			return ErrConflict
+			return domain.ErrConflict
 		}
 		if !found && c.Action != "join" {
-			return ErrNotFound
+			return domain.ErrNotFound
 		}
 		signup := !v.Confirmed && v.RegistrationUntil != nil && time.Now().Before(*v.RegistrationUntil)
 		c.Wishes = strings.TrimSpace(c.Wishes)
 		switch c.Action {
 		case "join", "wishes":
 			if c.Wishes == "" || utf8.RuneCountInString(c.Wishes) > 2000 {
-				return ErrInvalid
+				return domain.ErrInvalid
 			}
 			if c.Action == "join" {
 				if !signup {
-					return ErrConflict
+					return domain.ErrConflict
 				}
 				if found {
 					if p.Wishes == c.Wishes {
 						return nil
 					}
-					return ErrConflict
+					return domain.ErrConflict
 				}
 				if _, err = tx.Exec(ctx, "INSERT INTO santa_participants(season_id,person_id,wishes) VALUES ($1,$2,$3)", v.ID, personID, c.Wishes); err != nil {
 					return err
@@ -74,7 +76,7 @@ func (s *Service) MemberAction(ctx context.Context, personID int64, c MemberComm
 			}
 		case "cancel":
 			if !signup {
-				return ErrConflict
+				return domain.ErrConflict
 			}
 			if _, err = tx.Exec(ctx, "DELETE FROM santa_pairs WHERE season_id=$1", v.ID); err != nil {
 				return err
@@ -85,10 +87,10 @@ func (s *Service) MemberAction(ctx context.Context, personID int64, c MemberComm
 			_, err = tx.Exec(ctx, "DELETE FROM santa_participants WHERE season_id=$1 AND person_id=$2", v.ID, personID)
 		case "attendance":
 			if !v.Confirmed {
-				return ErrConflict
+				return domain.ErrConflict
 			}
 			if c.Attendance != "yes" && c.Attendance != "no" {
-				return ErrInvalid
+				return domain.ErrInvalid
 			}
 			if c.Attendance == p.Attendance {
 				return nil
@@ -103,18 +105,18 @@ func (s *Service) MemberAction(ctx context.Context, personID int64, c MemberComm
 			}
 		case "gift", "gift_description":
 			if !v.Confirmed {
-				return ErrConflict
+				return domain.ErrConflict
 			}
 			var current int64
 			if err = tx.QueryRow(ctx, "SELECT recipient_id FROM santa_pairs WHERE season_id=$1 AND giver_id=$2", v.ID, personID).Scan(&current); err != nil {
 				return err
 			}
 			if current != c.RecipientID {
-				return ErrConflict
+				return domain.ErrConflict
 			}
 			if c.Action == "gift_description" {
 				if c.GiftDescription == nil || utf8.RuneCountInString(*c.GiftDescription) > 2000 {
-					return ErrInvalid
+					return domain.ErrInvalid
 				}
 				description := strings.TrimSpace(*c.GiftDescription)
 				if description == p.GiftDescription {
@@ -124,7 +126,7 @@ func (s *Service) MemberAction(ctx context.Context, personID int64, c MemberComm
 				break
 			}
 			if c.Gift != "ready" && c.Gift != "ordered" && c.Gift != "not_ready" {
-				return ErrInvalid
+				return domain.ErrInvalid
 			}
 			if c.Gift == p.Gift {
 				return nil
@@ -134,7 +136,7 @@ func (s *Service) MemberAction(ctx context.Context, personID int64, c MemberComm
 			}
 		case "request_exit", "retract_exit":
 			if !v.Confirmed {
-				return ErrConflict
+				return domain.ErrConflict
 			}
 			status, msg := "exit_requested", "просит подтвердить выход из сезона."
 			if c.Action == "retract_exit" {
@@ -148,7 +150,7 @@ func (s *Service) MemberAction(ctx context.Context, personID int64, c MemberComm
 			}
 			err = s.notifyAdmins(ctx, tx, v, personID, "exit", msg)
 		default:
-			return ErrInvalid
+			return domain.ErrInvalid
 		}
 		if err != nil {
 			return err

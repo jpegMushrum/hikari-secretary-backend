@@ -1,4 +1,4 @@
-package learningcontent
+package postgres
 
 import (
 	"context"
@@ -13,7 +13,7 @@ import (
 // FailUnavailableManualGenerations is used at startup when the AI worker is
 // disabled. An accepted request must reach a terminal state and release its previous edition
 // for delivery. Automatic jobs resume normally when their worker returns.
-func (r *PostgresRepository) FailUnavailableManualGenerations(ctx context.Context) error {
+func (r *Repository) FailUnavailableManualGenerations(ctx context.Context) error {
 	_, err := r.pool.Exec(ctx, `UPDATE ai_topic_jobs j SET status='failed',last_error='Генератор отключён',updated_at=NOW()
 		WHERE j.status IN ('pending','generating','retry') AND j.regeneration_requested_by IS NOT NULL`)
 	return err
@@ -21,7 +21,7 @@ func (r *PostgresRepository) FailUnavailableManualGenerations(ctx context.Contex
 
 // QueueGeneration returns the job the UI should track. New editions retain
 // the scheduled time of a queued post even when newer jobs exist in history.
-func (r *PostgresRepository) QueueGeneration(ctx context.Context, slot time.Time, actor int64) (int64, error) {
+func (r *Repository) QueueGeneration(ctx context.Context, slot time.Time, actor int64) (int64, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return 0, err

@@ -12,7 +12,8 @@ import (
 	"time"
 
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/adapters/adminapi"
-	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/santa"
+	santapg "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/santa/adapters/postgres"
+	santa "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/santa/application"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/httpapi"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/telegramauth"
 )
@@ -29,7 +30,7 @@ func (identities santaTestIdentities) Validate(token string) (telegramauth.Ident
 
 func TestSantaRoutesProtectRolesDraftsAndAssignments(t *testing.T) {
 	pool := testPool(t)
-	service := santa.New(pool, []int64{41})
+	service := santapg.NewRepository(pool, []int64{41})
 	auth := santaTestIdentities{
 		"admin": {TelegramID: 41, FirstName: "Admin"},
 		"alice": {TelegramID: 42, FirstName: "Alice", Username: "alice_club"},

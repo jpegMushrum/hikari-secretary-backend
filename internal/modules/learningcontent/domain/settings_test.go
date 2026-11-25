@@ -1,4 +1,4 @@
-package learningcontent
+package domain
 
 import (
 	"strings"

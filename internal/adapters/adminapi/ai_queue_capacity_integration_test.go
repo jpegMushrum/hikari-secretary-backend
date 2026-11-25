@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent"
+	learningpostgres "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent/adapters/postgres"
 	publishing "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/adapters/postgres"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/domain"
 )
@@ -17,7 +17,7 @@ func TestAIQueueHasOneSlotAndNextGenerationWaitsForIt(t *testing.T) {
 	ctx := context.Background()
 	pool := managementSortTestPool(t)
 	posts := publishing.NewRepository(pool)
-	jobs := learningcontent.NewPostgresRepository(pool)
+	jobs := learningpostgres.NewRepository(pool)
 	now := time.Now().UTC()
 	draft := domain.ScheduledDraft{
 		Draft:       domain.Draft{CreatorTelegramID: 42, Source: "ai_daily_topic", Text: "test"},
@@ -77,7 +77,7 @@ func TestResumePreservesLegacyPausedEditionsAndOnlyFillsFreeAISlot(t *testing.T)
 		t.Run(map[bool]string{false: "empty", true: "occupied"}[existing], func(t *testing.T) {
 			ctx := context.Background()
 			pool := managementSortTestPool(t)
-			repo := learningcontent.NewPostgresRepository(pool)
+			repo := learningpostgres.NewRepository(pool)
 			now := time.Now().UTC()
 			if _, err := pool.Exec(ctx, `UPDATE ai_topic_settings SET automation_enabled=false;
 				INSERT INTO publications(id,creator_telegram_id,text,source,status,scheduled_at)

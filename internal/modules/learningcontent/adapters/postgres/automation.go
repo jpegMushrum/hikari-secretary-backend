@@ -1,4 +1,4 @@
-package learningcontent
+package postgres
 
 import (
 	"context"
@@ -36,7 +36,7 @@ const cancellableQueuedPublication = `SELECT p.id FROM (
 ) p WHERE NOT EXISTS (SELECT 1 FROM publication_deliveries d
 	WHERE d.publication_id=p.id AND d.status NOT IN ('pending','retry'))`
 
-func (r *PostgresRepository) Automation(ctx context.Context, configured bool, today time.Time) (AutomationState, error) {
+func (r *Repository) Automation(ctx context.Context, configured bool, today time.Time) (AutomationState, error) {
 	state := AutomationState{Configured: configured}
 	err := r.pool.QueryRow(ctx, `SELECT automation_enabled AND $3, EXISTS(SELECT 1`+dailyCandidates+`),
 		(`+cancellableQueuedPublication+`) FROM ai_topic_settings WHERE id=1`,
@@ -45,7 +45,7 @@ func (r *PostgresRepository) Automation(ctx context.Context, configured bool, to
 	return state, err
 }
 
-func (r *PostgresRepository) CancelQueued(ctx context.Context, publicationID, actor int64) error {
+func (r *Repository) CancelQueued(ctx context.Context, publicationID, actor int64) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -132,7 +132,7 @@ func cancelDailyJobs(ctx context.Context, tx pgx.Tx, since time.Time, until *tim
 	return count, nil
 }
 
-func (r *PostgresRepository) SetAutomation(ctx context.Context, enabled bool, today time.Time, actor int64) error {
+func (r *Repository) SetAutomation(ctx context.Context, enabled bool, today time.Time, actor int64) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -200,7 +200,7 @@ func (r *PostgresRepository) SetAutomation(ctx context.Context, enabled bool, to
 	return tx.Commit(ctx)
 }
 
-func (r *PostgresRepository) CancelToday(ctx context.Context, today time.Time, actor int64) error {
+func (r *Repository) CancelToday(ctx context.Context, today time.Time, actor int64) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return err

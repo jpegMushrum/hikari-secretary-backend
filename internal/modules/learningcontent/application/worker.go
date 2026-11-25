@@ -1,4 +1,4 @@
-package learningcontent
+package application
 
 import (
 	"context"
@@ -7,11 +7,19 @@ import (
 	"log/slog"
 	"time"
 
+	content "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent/domain"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/domain"
 )
 
+type JobRepository interface {
+	Enqueue(context.Context, time.Time) (int64, error)
+	Claim(context.Context, bool, time.Duration) (*content.Job, error)
+	Complete(context.Context, *content.Job, domain.ScheduledDraft, content.Topic) error
+	MarkFailed(context.Context, *content.Job, string, *time.Time) error
+}
+
 type Worker struct {
-	repo        *PostgresRepository
+	repo        JobRepository
 	service     *Service
 	location    *time.Location
 	publishTime string
@@ -21,7 +29,7 @@ type Worker struct {
 	logger      *slog.Logger
 }
 
-func NewWorker(repo *PostgresRepository, service *Service, location *time.Location, publishTime string, creatorID int64, maxAttempts int, providerTimeout time.Duration, logger *slog.Logger) *Worker {
+func NewWorker(repo JobRepository, service *Service, location *time.Location, publishTime string, creatorID int64, maxAttempts int, providerTimeout time.Duration, logger *slog.Logger) *Worker {
 	// DeepSeek may retry one truncated response within the same generation.
 	return &Worker{repo, service, location, publishTime, creatorID, maxAttempts, 2*providerTimeout + time.Minute, logger}
 }

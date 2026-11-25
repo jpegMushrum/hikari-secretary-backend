@@ -7,12 +7,13 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/santa"
+	santa "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/santa/application"
+	santadomain "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/santa/domain"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/requestcontext"
 )
 
 // MountAdmin is called by the authenticated administrative router.
-func MountAdmin(mux *http.ServeMux, service *santa.Service) {
+func MountAdmin(mux *http.ServeMux, service santa.Service) {
 	const base = "/api/v1/admin/santa"
 	mux.HandleFunc("GET "+base+"/visibility", visibility(service, true))
 	mux.HandleFunc("GET "+base, func(w http.ResponseWriter, r *http.Request) {
@@ -35,7 +36,7 @@ func MountAdmin(mux *http.ServeMux, service *santa.Service) {
 }
 
 // MountLocalReset is mounted only in the synthetic local admin router.
-func MountLocalReset(mux *http.ServeMux, service *santa.Service) {
+func MountLocalReset(mux *http.ServeMux, service santa.Service) {
 	mux.HandleFunc("POST /api/v1/admin/santa/reset", func(w http.ResponseWriter, r *http.Request) {
 		var cmd struct {
 			SeasonID int64 `json:"season_id"`
@@ -53,7 +54,7 @@ func MountLocalReset(mux *http.ServeMux, service *santa.Service) {
 }
 
 // MountMember obtains the owner exclusively from the verified member context.
-func MountMember(mux *http.ServeMux, service *santa.Service, personID func(*http.Request) int64) {
+func MountMember(mux *http.ServeMux, service santa.Service, personID func(*http.Request) int64) {
 	const base = "/api/v1/member/santa"
 	mux.HandleFunc("GET "+base+"/visibility", visibility(service, false))
 	mux.HandleFunc("GET "+base, func(w http.ResponseWriter, r *http.Request) {
@@ -68,7 +69,7 @@ func MountMember(mux *http.ServeMux, service *santa.Service, personID func(*http
 	})
 }
 
-func visibility(service *santa.Service, admin bool) http.HandlerFunc {
+func visibility(service santa.Service, admin bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		season, err := service.VisibleSeason(r.Context(), admin)
 		data := map[string]any{"visible": season != nil}
@@ -89,7 +90,7 @@ func decode(w http.ResponseWriter, r *http.Request, target any) bool {
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(target) != nil || decoder.Decode(&struct{}{}) != io.EOF {
-		respond(w, nil, santa.ErrInvalid)
+		respond(w, nil, santadomain.ErrInvalid)
 		return false
 	}
 	return true
@@ -99,11 +100,11 @@ func respond(w http.ResponseWriter, data any, err error) {
 	if err != nil {
 		status, code := http.StatusInternalServerError, "internal_error"
 		switch {
-		case errors.Is(err, santa.ErrInvalid):
+		case errors.Is(err, santadomain.ErrInvalid):
 			status, code = http.StatusBadRequest, "invalid_request"
-		case errors.Is(err, santa.ErrNotFound):
+		case errors.Is(err, santadomain.ErrNotFound):
 			status, code = http.StatusNotFound, "not_found"
-		case errors.Is(err, santa.ErrConflict):
+		case errors.Is(err, santadomain.ErrConflict):
 			status, code = http.StatusConflict, "invalid_state"
 		}
 		write(w, status, map[string]string{"error": code})

@@ -13,16 +13,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent"
+	learningpostgres "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent/adapters/postgres"
+	learningapp "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent/application"
+	learningdomain "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent/domain"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/domain"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/migrations"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/requestcontext"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/telegramauth"
 )
 
-type generateFunc func() (learningcontent.Topic, error)
+type generateFunc func() (learningdomain.Topic, error)
 
-func (f generateFunc) Generate(context.Context, []learningcontent.Topic, learningcontent.Options) (learningcontent.Topic, error) {
+func (f generateFunc) Generate(context.Context, []learningdomain.Topic, learningdomain.Options) (learningdomain.Topic, error) {
 	return f()
 }
 
@@ -108,7 +110,7 @@ func TestLatestGenerationSelectsActualJobAndSerializesRequests(t *testing.T) {
 func TestRegenerateFailedAndQueuedAIJob(t *testing.T) {
 	ctx := context.Background()
 	pool := managementSortTestPool(t)
-	repo := learningcontent.NewPostgresRepository(pool)
+	repo := learningpostgres.NewRepository(pool)
 	_, err := pool.Exec(ctx, `INSERT INTO ai_topic_jobs(id,scheduled_for,status,next_attempt_at,last_error,failure_notified)
 	VALUES(1,NOW()-interval '1 day','failed',NOW(),'balance',TRUE),
 	      (2,NOW()+interval '1 day','pending',NOW()-interval '1 hour',NULL,FALSE)`)
@@ -146,12 +148,12 @@ func TestRegenerateFailedAndQueuedAIJob(t *testing.T) {
 	request("POST", "latest/regenerate", 202)
 	request("POST", "1/regenerate", 409)
 	assertEligible(false)
-	topic := learningcontent.Topic{JLPTLevel: "N3", Title: "初稿", VocabularyTheme: "first", Introduction: "An introduction", Questions: []string{"q"}, Vocabulary: []learningcontent.VocabularyItem{{Japanese: "猫", Reading: "ねこ", Translation: "cat"}}, Grammar: []learningcontent.GrammarPoint{{Pattern: "p", Explanation: "e", Example: "x", Translation: "t"}}}
+	topic := learningdomain.Topic{JLPTLevel: "N3", Title: "初稿", VocabularyTheme: "first", Introduction: "An introduction", Questions: []string{"q"}, Vocabulary: []learningdomain.VocabularyItem{{Japanese: "猫", Reading: "ねこ", Translation: "cat"}}, Grammar: []learningdomain.GrammarPoint{{Pattern: "p", Explanation: "e", Example: "x", Translation: "t"}}}
 	target := domain.Target{Key: "club", Name: "Club", Destination: "test"}
 	runWorker := func(want string, provider generateFunc) {
 		t.Helper()
-		service := learningcontent.NewService(provider, repo, target, 1, 1, 1)
-		worker := learningcontent.NewWorker(repo, service, time.UTC, "", 0, 5, time.Second, slog.Default())
+		service := learningapp.NewService(provider, repo, target, 1, 1, 1)
+		worker := learningapp.NewWorker(repo, service, time.UTC, "", 0, 5, time.Second, slog.Default())
 		runCtx, cancel := context.WithCancel(ctx)
 		done := make(chan struct{})
 		go func() { defer close(done); worker.Run(runCtx) }()
@@ -168,7 +170,7 @@ func TestRegenerateFailedAndQueuedAIJob(t *testing.T) {
 		}
 		t.Fatalf("job did not reach %s", want)
 	}
-	runWorker("scheduled", func() (learningcontent.Topic, error) { return topic, nil })
+	runWorker("scheduled", func() (learningdomain.Topic, error) { return topic, nil })
 	assertEligible(true)
 	var id, creator, delivery int64
 	var scheduled time.Time
@@ -179,8 +181,8 @@ func TestRegenerateFailedAndQueuedAIJob(t *testing.T) {
 		t.Fatalf("unexpected recovered schedule: %d %v", creator, scheduled)
 	}
 	request("POST", "1/regenerate", 202)
-	runWorker("failed", func() (learningcontent.Topic, error) {
-		return learningcontent.Topic{}, errors.New("provider unavailable")
+	runWorker("failed", func() (learningdomain.Topic, error) {
+		return learningdomain.Topic{}, errors.New("provider unavailable")
 	})
 	assertEligible(true)
 	var original string
@@ -188,7 +190,7 @@ func TestRegenerateFailedAndQueuedAIJob(t *testing.T) {
 		t.Fatalf("lost original: %q %v", original, err)
 	}
 	request("POST", "1/regenerate", 202)
-	runWorker("failed", func() (learningcontent.Topic, error) { return topic, nil })
+	runWorker("failed", func() (learningdomain.Topic, error) { return topic, nil })
 	if detail := request("GET", "1", 200); detail["last_error"] != "model repeated a conversation topic" {
 		t.Fatalf("expected old topic to remain in history: %v", detail)
 	}
@@ -206,7 +208,7 @@ func TestRegenerateFailedAndQueuedAIJob(t *testing.T) {
 	topic.Title = "第二稿"
 	topic.VocabularyTheme = "second"
 	request("POST", "1/regenerate", 202)
-	runWorker("scheduled", func() (learningcontent.Topic, error) { return topic, nil })
+	runWorker("scheduled", func() (learningdomain.Topic, error) { return topic, nil })
 	var matched bool
 	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM publications p JOIN publication_deliveries d ON d.publication_id=p.id
 		JOIN ai_topic_jobs j ON j.publication_id=p.id WHERE j.id=1 AND p.id=$1 AND d.id=$2 AND p.scheduled_at=$3
@@ -244,7 +246,7 @@ func TestRegenerateFailedAndQueuedAIJob(t *testing.T) {
 		}
 	}
 	request("POST", "1/regenerate", 202)
-	runWorker("failed", func() (learningcontent.Topic, error) {
+	runWorker("failed", func() (learningdomain.Topic, error) {
 		_, err := pool.Exec(ctx, "UPDATE publication_deliveries SET status='publishing' WHERE id=$1", delivery)
 		next := topic
 		next.Title = "第三稿"
@@ -262,12 +264,12 @@ func TestRegenerateFailedAndQueuedAIJob(t *testing.T) {
 func TestManualSchedulingReplayPreservesReplacement(t *testing.T) {
 	ctx := context.Background()
 	pool := managementSortTestPool(t)
-	repo := learningcontent.NewPostgresRepository(pool)
+	repo := learningpostgres.NewRepository(pool)
 	draft := domain.ScheduledDraft{
 		Draft:   domain.Draft{Source: "ai_daily_topic", SourceKey: "manual-77", Text: "original", CreatorTelegramID: 42},
 		Targets: []domain.Target{{Key: "test", Name: "Test", Destination: "test"}}, ScheduledAt: time.Now().UTC(),
 	}
-	first := learningcontent.Topic{Title: "original"}
+	first := learningdomain.Topic{Title: "original"}
 	type scheduled struct {
 		id  int64
 		err error
@@ -288,7 +290,7 @@ func TestManualSchedulingReplayPreservesReplacement(t *testing.T) {
 	if err := pool.QueryRow(ctx, "SELECT scheduled_at FROM publications WHERE id=$1", id).Scan(&draft.ScheduledAt); err != nil {
 		t.Fatal(err)
 	}
-	second := learningcontent.Topic{Title: "replacement"}
+	second := learningdomain.Topic{Title: "replacement"}
 	if ok, err := repo.ReplaceQueuedTopic(ctx, id, second); err != nil || !ok {
 		t.Fatalf("replacement: %v %v", ok, err)
 	}
@@ -338,7 +340,7 @@ func TestConcurrentTopicSavesRejectDuplicate(t *testing.T) {
 		t.Run(duplicate, func(t *testing.T) {
 			ctx := context.Background()
 			pool := managementSortTestPool(t)
-			repo := learningcontent.NewPostgresRepository(pool)
+			repo := learningpostgres.NewRepository(pool)
 			posts := make([]int64, 2)
 			for i, title := range []string{"first original", "second original"} {
 				// Two legacy queued publications still allow independent replacements.
@@ -361,7 +363,7 @@ func TestConcurrentTopicSavesRejectDuplicate(t *testing.T) {
 			start := make(chan struct{})
 			results := make(chan error, 2)
 			for i, suffix := range []string{"A", "B"} {
-				topic := learningcontent.Topic{Title: "new " + suffix, VocabularyTheme: "theme " + suffix}
+				topic := learningdomain.Topic{Title: "new " + suffix, VocabularyTheme: "theme " + suffix}
 				if duplicate == "title" {
 					topic.Title = "shared title"
 				} else {
@@ -395,7 +397,7 @@ func TestConcurrentTopicSavesRejectDuplicate(t *testing.T) {
 func TestRegenerationReclaimsInterruptedAttempt(t *testing.T) {
 	ctx := context.Background()
 	pool := managementSortTestPool(t)
-	repo := learningcontent.NewPostgresRepository(pool)
+	repo := learningpostgres.NewRepository(pool)
 	_, err := pool.Exec(ctx, `INSERT INTO ai_topic_jobs(id,scheduled_for,status,next_attempt_at,regeneration_requested_by)
 		VALUES(1,NOW(),'pending',NOW(),42)`)
 	if err != nil {
@@ -418,7 +420,7 @@ func TestRegenerationReclaimsInterruptedAttempt(t *testing.T) {
 	if err := repo.MarkFailed(ctx, previous, "stale", nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.Complete(ctx, previous, domain.ScheduledDraft{}, learningcontent.Topic{}); err == nil {
+	if err := repo.Complete(ctx, previous, domain.ScheduledDraft{}, learningdomain.Topic{}); err == nil {
 		t.Fatal("stale attempt completed")
 	}
 	var state string
@@ -458,7 +460,7 @@ func TestRegenerationMigrationRecoversDeliveredLegacyPublication(t *testing.T) {
 	if err = migrations.Run(ctx, conn.Conn(), "../../../migrations"); err != nil {
 		t.Fatal(err)
 	}
-	history, err := learningcontent.NewPostgresRepository(pool).History(ctx)
+	history, err := learningpostgres.NewRepository(pool).History(ctx)
 	if err != nil || len(history) != 1 || history[0].Title != "Сакура" || len(history[0].Vocabulary) != 1 ||
 		history[0].Vocabulary[0].Japanese != "花" || len(history[0].Grammar) != 1 || history[0].Grammar[0].Pattern != "ように" {
 		t.Fatalf("legacy version omitted from generation history: %v %v", history, err)

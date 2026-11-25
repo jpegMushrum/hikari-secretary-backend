@@ -6,7 +6,8 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent"
+	learningpostgres "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent/adapters/postgres"
+	learningdomain "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent/domain"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/pagination"
 )
 
@@ -16,7 +17,7 @@ func (h *Management) today() time.Time {
 }
 
 func (h *Management) aiAutomation(w http.ResponseWriter, r *http.Request) {
-	s, err := learningcontent.NewPostgresRepository(h.Pool).Automation(r.Context(), h.AIAutomationConfigured, h.today())
+	s, err := learningpostgres.NewRepository(h.Pool).Automation(r.Context(), h.AIAutomationConfigured, h.today())
 	if err != nil {
 		managementError(w, err)
 		return
@@ -39,7 +40,7 @@ func (h *Management) setAIAutomation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 409, "invalid_state")
 		return
 	}
-	if err := learningcontent.NewPostgresRepository(h.Pool).SetAutomation(r.Context(), *body.Enabled, h.today(), administratorID(r)); err != nil {
+	if err := learningpostgres.NewRepository(h.Pool).SetAutomation(r.Context(), *body.Enabled, h.today(), administratorID(r)); err != nil {
 		managementError(w, err)
 		return
 	}
@@ -47,7 +48,7 @@ func (h *Management) setAIAutomation(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Management) cancelAIToday(w http.ResponseWriter, r *http.Request) {
-	if err := learningcontent.NewPostgresRepository(h.Pool).CancelToday(r.Context(), h.today(), administratorID(r)); err != nil {
+	if err := learningpostgres.NewRepository(h.Pool).CancelToday(r.Context(), h.today(), administratorID(r)); err != nil {
 		managementError(w, err)
 		return
 	}
@@ -65,7 +66,7 @@ func (h *Management) cancelAIQueued(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	if err := learningcontent.NewPostgresRepository(h.Pool).CancelQueued(r.Context(), body.PublicationID, administratorID(r)); err != nil {
+	if err := learningpostgres.NewRepository(h.Pool).CancelQueued(r.Context(), body.PublicationID, administratorID(r)); err != nil {
 		managementError(w, err)
 		return
 	}
@@ -73,19 +74,19 @@ func (h *Management) cancelAIQueued(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Management) aiSettings(w http.ResponseWriter, r *http.Request) {
-	s, err := learningcontent.NewPostgresRepository(h.Pool).Settings(r.Context())
+	s, err := learningpostgres.NewRepository(h.Pool).Settings(r.Context())
 	if err != nil {
 		managementError(w, err)
 		return
 	}
 	writeJSON(w, 200, struct {
-		learningcontent.Settings
+		learningdomain.Settings
 		Enabled bool `json:"enabled"`
 	}{s, h.AIEnabled})
 }
 
 func (h *Management) saveAISettings(w http.ResponseWriter, r *http.Request) {
-	var s learningcontent.Settings
+	var s learningdomain.Settings
 	if !decodeBody(w, r, &s) {
 		return
 	}
@@ -93,7 +94,7 @@ func (h *Management) saveAISettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid_request")
 		return
 	}
-	if err := learningcontent.NewPostgresRepository(h.Pool).SaveSettings(r.Context(), s, administratorID(r)); err != nil {
+	if err := learningpostgres.NewRepository(h.Pool).SaveSettings(r.Context(), s, administratorID(r)); err != nil {
 		managementError(w, err)
 		return
 	}
@@ -193,7 +194,7 @@ func (h *Management) aiHistoryVersions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Management) latestAIGeneration(w http.ResponseWriter, r *http.Request) {
-	items, err := h.queryRows(r, h.aiHistorySelect()+" WHERE j.id=("+learningcontent.LatestGenerationID+")")
+	items, err := h.queryRows(r, h.aiHistorySelect()+" WHERE j.id=("+learningpostgres.LatestGenerationID+")")
 	if err != nil {
 		managementError(w, err)
 		return
@@ -226,7 +227,7 @@ func (h *Management) queueAIGeneration(w http.ResponseWriter, r *http.Request) {
 			slot = slot.AddDate(0, 0, 1)
 		}
 	}
-	id, err := learningcontent.NewPostgresRepository(h.Pool).QueueGeneration(r.Context(), slot, administratorID(r))
+	id, err := learningpostgres.NewRepository(h.Pool).QueueGeneration(r.Context(), slot, administratorID(r))
 	if err != nil {
 		managementError(w, err)
 		return
@@ -248,7 +249,7 @@ func (h *Management) regenerateAIJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 503, "ai_disabled")
 		return
 	}
-	id, err := learningcontent.NewPostgresRepository(h.Pool).RequestRegeneration(r.Context(), jobID, administratorID(r))
+	id, err := learningpostgres.NewRepository(h.Pool).RequestRegeneration(r.Context(), jobID, administratorID(r))
 	if err != nil {
 		managementError(w, err)
 		return

@@ -1,11 +1,13 @@
-package learningcontent
+package application
 
 import (
 	"fmt"
 	"strings"
+
+	content "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent/domain"
 )
 
-func Render(topic Topic) (string, map[string]any) {
+func Render(topic content.Topic) (string, map[string]any) {
 	questions := make([]string, 0, len(topic.Questions))
 	for _, q := range topic.Questions {
 		questions = append(questions, "• "+q)

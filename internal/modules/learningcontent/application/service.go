@@ -1,19 +1,23 @@
-package learningcontent
+package application
 
 import (
 	"context"
-	"fmt"
 	"time"
 
-	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/application"
+	content "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent/domain"
+	publishing "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/application"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/domain"
 )
 
+type Provider interface {
+	Generate(context.Context, []content.Topic, content.Options) (content.Topic, error)
+}
+
 type Repository interface {
-	Preferences(context.Context) (Options, error)
-	History(context.Context) ([]Topic, error)
-	ScheduleManual(context.Context, domain.ScheduledDraft, Topic) (int64, error)
-	ReplaceQueuedTopic(context.Context, int64, Topic) (bool, error)
+	Preferences(context.Context) (content.Options, error)
+	History(context.Context) ([]content.Topic, error)
+	ScheduleManual(context.Context, domain.ScheduledDraft, content.Topic) (int64, error)
+	ReplaceQueuedTopic(context.Context, int64, content.Topic) (bool, error)
 }
 
 type Service struct {
@@ -33,52 +37,42 @@ func NewService(provider Provider, repository Repository, target domain.Target, 
 	return &Service{provider: provider, repository: repository, target: target, questionCount: questions, vocabularyCount: vocabulary, grammarCount: grammar}
 }
 
-func (s *Service) Generate(ctx context.Context, override *Options) (Topic, error) {
+func (s *Service) Generate(ctx context.Context, override *content.Options) (content.Topic, error) {
 	options, err := s.repository.Preferences(ctx)
 	if err != nil {
-		return Topic{}, err
+		return content.Topic{}, err
 	}
 	if override != nil {
 		options = *override
 	}
 	history, err := s.repository.History(ctx)
 	if err != nil {
-		return Topic{}, err
+		return content.Topic{}, err
 	}
 	topic, err := s.provider.Generate(ctx, history, options)
 	if err != nil {
-		return Topic{}, err
+		return content.Topic{}, err
 	}
 	for _, old := range history {
-		if err := topic.checkDuplicate(old.Title, old.VocabularyTheme); err != nil {
-			return Topic{}, err
+		if err := topic.CheckDuplicate(old.Title, old.VocabularyTheme); err != nil {
+			return content.Topic{}, err
 		}
 	}
 	return topic, nil
 }
 
-func (t Topic) checkDuplicate(title, vocabularyTheme string) error {
-	if title != "" && normalize(t.Title) == normalize(title) {
-		return fmt.Errorf("model repeated a conversation topic")
-	}
-	if vocabularyTheme != "" && normalize(t.VocabularyTheme) == normalize(vocabularyTheme) {
-		return fmt.Errorf("model repeated a vocabulary theme")
-	}
-	return nil
-}
-
-func (s *Service) Schedule(ctx context.Context, topic Topic, creator int64, scheduledAt time.Time, sourceKey string) (int64, error) {
+func (s *Service) Schedule(ctx context.Context, topic content.Topic, creator int64, scheduledAt time.Time, sourceKey string) (int64, error) {
 	draft, err := s.scheduledDraft(topic, creator, scheduledAt, sourceKey)
 	if err != nil {
 		return 0, err
 	}
-	if err := application.PrepareScheduledDraft(&draft); err != nil {
+	if err := publishing.PrepareScheduledDraft(&draft); err != nil {
 		return 0, err
 	}
 	return s.repository.ScheduleManual(ctx, draft, topic)
 }
 
-func (s *Service) scheduledDraft(topic Topic, creator int64, when time.Time, key string) (domain.ScheduledDraft, error) {
+func (s *Service) scheduledDraft(topic content.Topic, creator int64, when time.Time, key string) (domain.ScheduledDraft, error) {
 	if err := topic.Validate(s.questionCount, s.vocabularyCount, s.grammarCount); err != nil {
 		return domain.ScheduledDraft{}, err
 	}
@@ -86,7 +80,7 @@ func (s *Service) scheduledDraft(topic Topic, creator int64, when time.Time, key
 	return domain.ScheduledDraft{Draft: domain.Draft{CreatorTelegramID: creator, Text: text, RichMessage: rich, Source: "ai_daily_topic", SourceKey: key}, Targets: []domain.Target{s.target}, ScheduledAt: when}, nil
 }
 
-func (s *Service) Replace(ctx context.Context, publicationID int64, topic Topic) (bool, error) {
+func (s *Service) Replace(ctx context.Context, publicationID int64, topic content.Topic) (bool, error) {
 	if err := topic.Validate(s.questionCount, s.vocabularyCount, s.grammarCount); err != nil {
 		return false, err
 	}

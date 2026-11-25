@@ -22,10 +22,12 @@ import (
 	eventspostgres "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/events/adapters/postgres"
 	eventsapp "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/events/application"
 	interactions "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/interactions/application"
-	learningcontent "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent"
+	learningpostgres "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent/adapters/postgres"
+	learningapp "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent/application"
+	learningdomain "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent/domain"
 	publishing "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/application"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/domain"
-	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/santa"
+	santapg "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/santa/adapters/postgres"
 )
 
 const (
@@ -37,12 +39,12 @@ type Handler struct {
 	pool         *pgxpool.Pool
 	flows        *interactions.Service
 	publications *publishing.Service
-	ai           *learningcontent.Service
+	ai           *learningapp.Service
 	previewSanta bool
 }
 
-func NewRouter(pool *pgxpool.Pool, flows *interactions.Service, publications *publishing.Service, aiServices ...*learningcontent.Service) http.Handler {
-	var ai *learningcontent.Service
+func NewRouter(pool *pgxpool.Pool, flows *interactions.Service, publications *publishing.Service, aiServices ...*learningapp.Service) http.Handler {
+	var ai *learningapp.Service
 	if len(aiServices) > 0 {
 		ai = aiServices[0]
 	}
@@ -120,7 +122,7 @@ func (h *Handler) claimOutboxNotification(w http.ResponseWriter, r *http.Request
 	var attempts int
 	err = tx.QueryRow(r.Context(), `SELECT id,topic,payload,attempts FROM outbox
         WHERE (topic='event.cancelled' OR (topic='santa.notice' AND NOT $1::boolean))
-        AND status IN ('pending','failed') AND available_at<=NOW() AND (`+santa.NoticeDispatchableSQL+`)
+        AND status IN ('pending','failed') AND available_at<=NOW() AND (`+santapg.NoticeDispatchableSQL+`)
         ORDER BY available_at,id FOR UPDATE SKIP LOCKED LIMIT 1`, h.previewSanta).Scan(&id, &topic, &raw, &attempts)
 	if errors.Is(err, pgx.ErrNoRows) {
 		_ = tx.Commit(r.Context())
@@ -189,7 +191,7 @@ func (h *Handler) outboxNotificationFailed(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *Handler) aiFailureNotices(w http.ResponseWriter, r *http.Request) {
-	items, err := learningcontent.NewPostgresRepository(h.pool).FailureNotices(r.Context())
+	items, err := learningpostgres.NewRepository(h.pool).FailureNotices(r.Context())
 	if err != nil {
 		writeError(w, 500, "internal_error")
 		return
@@ -202,7 +204,7 @@ func (h *Handler) markAIFailureNotified(w http.ResponseWriter, r *http.Request) 
 		writeError(w, 400, "invalid_request")
 		return
 	}
-	if err := learningcontent.NewPostgresRepository(h.pool).MarkFailureNotified(r.Context(), id); err != nil {
+	if err := learningpostgres.NewRepository(h.pool).MarkFailureNotified(r.Context(), id); err != nil {
 		writeError(w, 500, "internal_error")
 		return
 	}
@@ -218,7 +220,7 @@ func (h *Handler) generateAITopic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Options *learningcontent.Options `json:"options"`
+		Options *learningdomain.Options `json:"options"`
 		// Accept the legacy bot field. Replacements now consider every saved version.
 		ExcludePublicationID *int64 `json:"exclude_publication_id"`
 	}
@@ -239,10 +241,10 @@ func (h *Handler) publishAITopic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Topic       learningcontent.Topic `json:"topic"`
-		CreatorID   int64                 `json:"creator_id"`
-		ScheduledAt string                `json:"scheduled_at"`
-		SourceKey   string                `json:"source_key"`
+		Topic       learningdomain.Topic `json:"topic"`
+		CreatorID   int64                `json:"creator_id"`
+		ScheduledAt string               `json:"scheduled_at"`
+		SourceKey   string               `json:"source_key"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
@@ -271,7 +273,7 @@ func (h *Handler) updateAITopicPublication(w http.ResponseWriter, r *http.Reques
 	}
 	id, ok := pathInt64(r, "publication_id")
 	var body struct {
-		Topic learningcontent.Topic `json:"topic"`
+		Topic learningdomain.Topic `json:"topic"`
 	}
 	if !ok || !decodeJSON(w, r, &body) {
 		writeError(w, 400, "invalid_request")
@@ -729,7 +731,7 @@ func (h *Handler) markPublicationNotified(w http.ResponseWriter, r *http.Request
 }
 
 func (h *Handler) aiPreferences(w http.ResponseWriter, r *http.Request) {
-	settings, err := learningcontent.NewPostgresRepository(h.pool).Settings(r.Context())
+	settings, err := learningpostgres.NewRepository(h.pool).Settings(r.Context())
 	if err != nil {
 		writeError(w, 500, "internal_error")
 		return
@@ -745,12 +747,12 @@ func (h *Handler) saveAIPreferences(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &body) {
 		return
 	}
-	settings := learningcontent.Settings{JLPTLevel: body.JLPTLevel, AdminComment: body.AdminComment}
+	settings := learningdomain.Settings{JLPTLevel: body.JLPTLevel, AdminComment: body.AdminComment}
 	if settings.Validate() != nil {
 		writeError(w, 400, "invalid_request")
 		return
 	}
-	err := learningcontent.NewPostgresRepository(h.pool).SaveSettings(r.Context(), settings, body.UpdatedBy)
+	err := learningpostgres.NewRepository(h.pool).SaveSettings(r.Context(), settings, body.UpdatedBy)
 	if err != nil {
 		writeError(w, 500, "internal_error")
 		return

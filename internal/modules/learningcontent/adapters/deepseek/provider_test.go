@@ -1,4 +1,4 @@
-package learningcontent
+package deepseek
 
 import (
 	"context"
@@ -9,57 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/domain"
+	content "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent/domain"
 )
-
-type providerStub struct {
-	topic   Topic
-	options Options
-	history []Topic
-}
-
-func (p *providerStub) Generate(_ context.Context, history []Topic, options Options) (Topic, error) {
-	p.history = history
-	p.options = options
-	return p.topic, nil
-}
-
-type repositoryStub struct {
-	preferences Options
-	history     []Topic
-}
-
-func (r *repositoryStub) Preferences(context.Context) (Options, error) { return r.preferences, nil }
-func (r *repositoryStub) History(context.Context) ([]Topic, error)     { return r.history, nil }
-func (r *repositoryStub) ScheduleManual(context.Context, domain.ScheduledDraft, Topic) (int64, error) {
-	return 0, nil
-}
-func (r *repositoryStub) ReplaceQueuedTopic(context.Context, int64, Topic) (bool, error) {
-	return true, nil
-}
-
-func TestGenerateUsesStoredPreferencesAndRejectsRepeatedTopic(t *testing.T) {
-	old := validTopic()
-	old.Title = "Повтор"
-	repo := &repositoryStub{preferences: Options{JLPTLevel: "N3"}, history: []Topic{old}}
-	provider := &providerStub{topic: validTopic()}
-	provider.topic.Title = "  повтор  "
-	service := NewService(provider, repo, domain.Target{Key: "target", Name: "Target", Destination: "-100"})
-	if _, err := service.Generate(context.Background(), nil); err == nil {
-		t.Fatal("expected repeated topic error")
-	}
-	if provider.options.JLPTLevel != "N3" {
-		t.Fatalf("provider level=%q", provider.options.JLPTLevel)
-	}
-}
-
-func TestTopicValidationRequiresConfiguredCounts(t *testing.T) {
-	topic := validTopic()
-	topic.Questions = topic.Questions[:4]
-	if err := topic.Validate(5, 10, 3); err == nil {
-		t.Fatal("expected count validation error")
-	}
-}
 
 func TestDeepSeekProviderRetriesTruncatedResponseAndKeepsRequestedLevel(t *testing.T) {
 	calls := 0
@@ -86,12 +37,12 @@ func TestDeepSeekProviderRetriesTruncatedResponseAndKeepsRequestedLevel(t *testi
 		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"finish_reason": "stop", "message": map[string]any{"content": string(raw)}}}})
 	}))
 	defer server.Close()
-	history := make([]Topic, 16)
+	history := make([]content.Topic, 16)
 	history[15] = validTopic()
 	history[15].Vocabulary[0].Japanese = "既出語"
 	history[15].Grammar[0].Pattern = "昔の文法"
-	provider := NewDeepSeekProvider("key", "model", server.URL, time.Second, 5, 10, 3)
-	topic, err := provider.Generate(context.Background(), history, Options{JLPTLevel: "N3"})
+	provider := NewProvider("key", "model", server.URL, time.Second, 5, 10, 3)
+	topic, err := provider.Generate(context.Background(), history, content.Options{JLPTLevel: "N3"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,8 +75,8 @@ func TestDeepSeekRetriesInvalidJSONWithStop(t *testing.T) {
 				}}})
 			}))
 			defer server.Close()
-			provider := NewDeepSeekProvider("key", "model", server.URL, time.Second, 5, 10, 3)
-			topic, err := provider.Generate(context.Background(), nil, Options{JLPTLevel: "N3"})
+			provider := NewProvider("key", "model", server.URL, time.Second, 5, 10, 3)
+			topic, err := provider.Generate(context.Background(), nil, content.Options{JLPTLevel: "N3"})
 			if calls != 2 || (err == nil) != tc.recover || (tc.recover && topic.Title == "") {
 				t.Fatalf("calls=%d topic=%q err=%v", calls, topic.Title, err)
 			}
@@ -133,15 +84,15 @@ func TestDeepSeekRetriesInvalidJSONWithStop(t *testing.T) {
 	}
 }
 
-func validTopic() Topic {
+func validTopic() content.Topic {
 	questions := []string{"1", "2", "3", "4", "5"}
-	vocabulary := make([]VocabularyItem, 10)
+	vocabulary := make([]content.VocabularyItem, 10)
 	for i := range vocabulary {
-		vocabulary[i] = VocabularyItem{"語", "ご", "слово"}
+		vocabulary[i] = content.VocabularyItem{Japanese: "語", Reading: "ご", Translation: "слово"}
 	}
-	grammar := make([]GrammarPoint, 3)
+	grammar := make([]content.GrammarPoint, 3)
 	for i := range grammar {
-		grammar[i] = GrammarPoint{"〜ため", "причина", "雨のため、行きません。", "Не иду из-за дождя."}
+		grammar[i] = content.GrammarPoint{Pattern: "〜ため", Explanation: "причина", Example: "雨のため、行きません。", Translation: "Не иду из-за дождя."}
 	}
-	return Topic{JLPTLevel: "N3", Title: "Тема", VocabularyTheme: "Лексика", Introduction: "Введение", Questions: questions, Vocabulary: vocabulary, Grammar: grammar}
+	return content.Topic{JLPTLevel: "N3", Title: "Тема", VocabularyTheme: "Лексика", Introduction: "Введение", Questions: questions, Vocabulary: vocabulary, Grammar: grammar}
 }

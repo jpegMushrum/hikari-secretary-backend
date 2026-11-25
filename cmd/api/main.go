@@ -20,13 +20,15 @@ import (
 	eventsapp "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/events/application"
 	interactionspostgres "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/interactions/adapters/postgres"
 	interactionsapp "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/interactions/application"
-	learningcontent "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent"
+	deepseek "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent/adapters/deepseek"
+	learningpostgres "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent/adapters/postgres"
+	learningapp "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent/application"
 	peoplepostgres "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/people/adapters/postgres"
 	peopleapp "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/people/application"
 	publishingpostgres "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/adapters/postgres"
 	publishingapp "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/application"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/domain"
-	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/santa"
+	santapg "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/santa/adapters/postgres"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/config"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/database"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/httpapi"
@@ -63,26 +65,26 @@ func main() {
 	interactionService := interactionsapp.NewService(interactionspostgres.NewRepository(pool))
 	eventsService := eventsapp.NewService(eventspostgres.NewRepository(pool))
 	publishingService := publishingapp.NewService(publishingpostgres.NewRepository(pool))
-	santaService := santa.New(pool, slices.Sorted(maps.Keys(cfg.AdminTelegramIDs)))
-	var aiService *learningcontent.Service
+	santaService := santapg.NewRepository(pool, slices.Sorted(maps.Keys(cfg.AdminTelegramIDs)))
+	var aiService *learningapp.Service
 	location, err := time.LoadLocation(cfg.AI.Timezone)
 	if err != nil {
 		logger.Error("invalid AI timezone", "error", err)
 		os.Exit(1)
 	}
 	if cfg.AI.Enabled {
-		provider := learningcontent.NewDeepSeekProvider(cfg.AI.APIKey, cfg.AI.Model, cfg.AI.BaseURL, cfg.AI.Timeout, cfg.AI.QuestionCount, cfg.AI.VocabularyCount, cfg.AI.GrammarCount)
-		repository := learningcontent.NewPostgresRepository(pool)
-		aiService = learningcontent.NewService(provider, repository, domain.Target{Key: cfg.AI.Target.Key, Name: cfg.AI.Target.Name, Destination: cfg.AI.Target.Destination, MessageThreadID: cfg.AI.Target.MessageThreadID}, cfg.AI.QuestionCount, cfg.AI.VocabularyCount, cfg.AI.GrammarCount)
+		provider := deepseek.NewProvider(cfg.AI.APIKey, cfg.AI.Model, cfg.AI.BaseURL, cfg.AI.Timeout, cfg.AI.QuestionCount, cfg.AI.VocabularyCount, cfg.AI.GrammarCount)
+		repository := learningpostgres.NewRepository(pool)
+		aiService = learningapp.NewService(provider, repository, domain.Target{Key: cfg.AI.Target.Key, Name: cfg.AI.Target.Name, Destination: cfg.AI.Target.Destination, MessageThreadID: cfg.AI.Target.MessageThreadID}, cfg.AI.QuestionCount, cfg.AI.VocabularyCount, cfg.AI.GrammarCount)
 		creator := int64(0)
 		for id := range cfg.AdminTelegramIDs {
 			if creator == 0 || id < creator {
 				creator = id
 			}
 		}
-		go learningcontent.NewWorker(repository, aiService, location, cfg.AI.PublishTime, creator, cfg.AI.MaxAttempts, cfg.AI.Timeout, logger).Run(ctx)
+		go learningapp.NewWorker(repository, aiService, location, cfg.AI.PublishTime, creator, cfg.AI.MaxAttempts, cfg.AI.Timeout, logger).Run(ctx)
 		logger.Info("AI learning content enabled", "target", cfg.AI.Target.Key, "automatic", cfg.AI.PublishTime != "")
-	} else if err := learningcontent.NewPostgresRepository(pool).FailUnavailableManualGenerations(ctx); err != nil {
+	} else if err := learningpostgres.NewRepository(pool).FailUnavailableManualGenerations(ctx); err != nil {
 		logger.Error("release publications awaiting disabled generator", "error", err)
 		os.Exit(1)
 	}

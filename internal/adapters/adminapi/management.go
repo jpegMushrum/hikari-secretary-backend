@@ -16,7 +16,7 @@ import (
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/adapters/santaapi"
 	publishing "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/application"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/domain"
-	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/santa"
+	santa "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/santa/application"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/database"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/pagination"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/requestcontext"
@@ -24,7 +24,7 @@ import (
 
 // Management is mounted behind the same administrator middleware as event reads.
 type Management struct {
-	Santa                  *santa.Service
+	Santa                  santa.Service
 	LocalSantaReset        bool
 	Pool                   *pgxpool.Pool
 	Publications           *publishing.Service

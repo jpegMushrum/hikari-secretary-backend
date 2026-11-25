@@ -1,7 +1,6 @@
-package learningcontent
+package domain
 
 import (
-	"context"
 	"errors"
 	"unicode/utf8"
 )
@@ -25,18 +24,4 @@ func (s Settings) Validate() error {
 		return ErrInvalidSettings
 	}
 	return nil
-}
-
-func (r *PostgresRepository) Settings(ctx context.Context) (Settings, error) {
-	var s Settings
-	err := r.pool.QueryRow(ctx, `SELECT jlpt_level,admin_comment FROM ai_topic_settings WHERE id=1`).Scan(&s.JLPTLevel, &s.AdminComment)
-	return s, err
-}
-
-func (r *PostgresRepository) SaveSettings(ctx context.Context, s Settings, actor int64) error {
-	if err := s.Validate(); err != nil {
-		return err
-	}
-	_, err := r.pool.Exec(ctx, `UPDATE ai_topic_settings SET jlpt_level=$1,admin_comment=$2,updated_by=$3,updated_at=NOW() WHERE id=1`, s.JLPTLevel, s.AdminComment, actor)
-	return err
 }

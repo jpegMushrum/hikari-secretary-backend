@@ -1,4 +1,4 @@
-package santa
+package postgres
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/santa/domain"
 )
 
 // NoticeDispatchableSQL applies to an unaliased outbox row. A reminder may
@@ -22,7 +23,7 @@ const NoticeDispatchableSQL = `outbox.topic <> 'santa.notice' OR
           AND now()>=s.exchange_at-make_interval(mins=>s.reminder_minutes) AND now()<s.exchange_at
     ))`
 
-func notice(ctx context.Context, tx pgx.Tx, v Season, tgID int64, kind, msg, path, profileURL string) error {
+func notice(ctx context.Context, tx pgx.Tx, v domain.Season, tgID int64, kind, msg, path, profileURL string) error {
 	fields := map[string]any{"telegram_user_id": tgID, "text": msg, "path": path, "kind": kind}
 	if profileURL != "" {
 		fields["profile_url"] = profileURL
@@ -36,14 +37,16 @@ func notice(ctx context.Context, tx pgx.Tx, v Season, tgID int64, kind, msg, pat
        VALUES ('santa.notice','santa_season',$1,$2,$3) ON CONFLICT(idempotency_key) DO NOTHING`, v.ID, payload, key)
 	return err
 }
-func personNotice(ctx context.Context, tx pgx.Tx, v Season, personID int64, kind, msg string) error {
+
+func personNotice(ctx context.Context, tx pgx.Tx, v domain.Season, personID int64, kind, msg string) error {
 	var tgID int64
 	if err := tx.QueryRow(ctx, "SELECT telegram_user_id FROM telegram_identities WHERE person_id=$1", personID).Scan(&tgID); err != nil {
 		return err
 	}
 	return notice(ctx, tx, v, tgID, kind, msg, "/santa", "")
 }
-func (s *Service) notifyAdmins(ctx context.Context, tx pgx.Tx, v Season, who int64, kind, action string) error {
+
+func (s *Repository) notifyAdmins(ctx context.Context, tx pgx.Tx, v domain.Season, who int64, kind, action string) error {
 	var name, profileURL string
 	err := tx.QueryRow(ctx, `SELECT COALESCE(NULLIF(p.full_name,''),t.display_name),
         CASE WHEN t.username COLLATE "C" ~ '^[A-Za-z][A-Za-z0-9_]{0,31}$'
@@ -62,14 +65,14 @@ func (s *Service) notifyAdmins(ctx context.Context, tx pgx.Tx, v Season, who int
 
 // EnqueueReminders can run on every scheduler tick. The season row serializes
 // enrollment and date changes with selecting the recipients of a due reminder.
-func (s *Service) EnqueueReminders(ctx context.Context) error {
+func (s *Repository) EnqueueReminders(ctx context.Context) error {
 	return pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		v, err := readSeason(tx.QueryRow(ctx, "SELECT "+seasonColumns+` FROM santa_seasons
             WHERE status='open' AND confirmed_revision IS NOT NULL
             AND now()>=exchange_at-make_interval(mins=>reminder_minutes) AND now()<exchange_at
             AND EXISTS(SELECT 1 FROM santa_participants WHERE season_id=santa_seasons.id AND status<>'excluded' AND NOT reminder_sent)
             FOR UPDATE SKIP LOCKED`))
-		if errors.Is(err, ErrNotFound) {
+		if errors.Is(err, domain.ErrNotFound) {
 			return nil
 		}
 		if err != nil {

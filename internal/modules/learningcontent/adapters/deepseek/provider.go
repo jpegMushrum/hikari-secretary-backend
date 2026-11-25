@@ -1,4 +1,4 @@
-package learningcontent
+package deepseek
 
 import (
 	"bytes"
@@ -10,25 +10,23 @@ import (
 	"net/http"
 	"strings"
 	"time"
-)
 
-type Provider interface {
-	Generate(context.Context, []Topic, Options) (Topic, error)
-}
+	content "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent/domain"
+)
 
 var errIncompleteTopic = errors.New("DeepSeek вернул пустой или некорректный JSON материала")
 
-type DeepSeekProvider struct {
+type Provider struct {
 	apiKey, model, baseURL                       string
 	questionCount, vocabularyCount, grammarCount int
 	client                                       *http.Client
 }
 
-func NewDeepSeekProvider(apiKey, model, baseURL string, timeout time.Duration, questions, vocabulary, grammar int) *DeepSeekProvider {
-	return &DeepSeekProvider{strings.TrimSpace(apiKey), model, strings.TrimRight(baseURL, "/"), questions, vocabulary, grammar, &http.Client{Timeout: timeout}}
+func NewProvider(apiKey, model, baseURL string, timeout time.Duration, questions, vocabulary, grammar int) *Provider {
+	return &Provider{strings.TrimSpace(apiKey), model, strings.TrimRight(baseURL, "/"), questions, vocabulary, grammar, &http.Client{Timeout: timeout}}
 }
 
-func (p *DeepSeekProvider) Generate(ctx context.Context, history []Topic, options Options) (Topic, error) {
+func (p *Provider) Generate(ctx context.Context, history []content.Topic, options content.Options) (content.Topic, error) {
 	used := make([]map[string]string, 0, len(history))
 	grammar := map[string]int{}
 	vocabulary := map[string]int{}
@@ -62,40 +60,40 @@ func (p *DeepSeekProvider) Generate(ctx context.Context, history []Topic, option
 		topic, finishReason, err := p.request(ctx, system, user)
 		if err == nil {
 			if topic.JLPTLevel != options.JLPTLevel {
-				return Topic{}, fmt.Errorf("DeepSeek returned %s, expected %s", topic.JLPTLevel, options.JLPTLevel)
+				return content.Topic{}, fmt.Errorf("DeepSeek returned %s, expected %s", topic.JLPTLevel, options.JLPTLevel)
 			}
 			if err = topic.Validate(p.questionCount, p.vocabularyCount, p.grammarCount); err != nil {
-				return Topic{}, err
+				return content.Topic{}, err
 			}
 			return topic, nil
 		}
 		if finishReason != "length" && !errors.Is(err, errIncompleteTopic) {
-			return Topic{}, err
+			return content.Topic{}, err
 		}
 	}
-	return Topic{}, fmt.Errorf("DeepSeek дважды не вернул полный JSON материала")
+	return content.Topic{}, fmt.Errorf("DeepSeek дважды не вернул полный JSON материала")
 }
 
-func (p *DeepSeekProvider) request(ctx context.Context, system, user string) (Topic, string, error) {
+func (p *Provider) request(ctx context.Context, system, user string) (content.Topic, string, error) {
 	payload := map[string]any{"model": p.model, "messages": []map[string]string{{"role": "system", "content": system}, {"role": "user", "content": user}}, "response_format": map[string]string{"type": "json_object"}, "max_tokens": 4000, "stream": false}
 	body, _ := json.Marshal(payload)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return Topic{}, "", err
+		return content.Topic{}, "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+p.apiKey)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return Topic{}, "", fmt.Errorf("DeepSeek request: %w", err)
+		return content.Topic{}, "", fmt.Errorf("DeepSeek request: %w", err)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return Topic{}, "", err
+		return content.Topic{}, "", err
 	}
 	if resp.StatusCode >= 400 {
-		return Topic{}, "", fmt.Errorf("DeepSeek HTTP %d: %s", resp.StatusCode, string(raw))
+		return content.Topic{}, "", fmt.Errorf("DeepSeek HTTP %d: %s", resp.StatusCode, string(raw))
 	}
 	var completion struct {
 		Choices []struct {
@@ -106,15 +104,15 @@ func (p *DeepSeekProvider) request(ctx context.Context, system, user string) (To
 		} `json:"choices"`
 	}
 	if err = json.Unmarshal(raw, &completion); err != nil || len(completion.Choices) == 0 {
-		return Topic{}, "", fmt.Errorf("invalid DeepSeek completion")
+		return content.Topic{}, "", fmt.Errorf("invalid DeepSeek completion")
 	}
 	finishReason := completion.Choices[0].FinishReason
 	if finishReason != "stop" {
-		return Topic{}, finishReason, fmt.Errorf("DeepSeek did not finish: %s", finishReason)
+		return content.Topic{}, finishReason, fmt.Errorf("DeepSeek did not finish: %s", finishReason)
 	}
-	var topic Topic
+	var topic content.Topic
 	if err = json.Unmarshal([]byte(completion.Choices[0].Message.Content), &topic); err != nil {
-		return Topic{}, finishReason, errIncompleteTopic
+		return content.Topic{}, finishReason, errIncompleteTopic
 	}
 	return topic, finishReason, nil
 }

@@ -1,6 +1,6 @@
 # Hikari Secretary Backend
 
-![Версия 0.5.1 в разработке](https://img.shields.io/badge/version-v0.5.1%20dev-6A5ACD)
+![Версия 0.5.1](https://img.shields.io/badge/version-v0.5.1-6A5ACD)
 ![Go](https://img.shields.io/badge/Go-1.27-00ADD8?logo=go&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-18-4169E1?logo=postgresql&logoColor=white)
 

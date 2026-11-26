@@ -39,7 +39,7 @@ func TestMascotImageRoutesAndRoleBoundaries(t *testing.T) {
 	images := imageMemory{}
 	api := &mascotapi.Handler{Repo: repo, Objects: images}
 	auth := santaTestIdentities{"admin": {TelegramID: 401, FirstName: "Admin"}, "alice": {TelegramID: 402, FirstName: "Alice"}, "bob": {TelegramID: 403, FirstName: "Bob"}}
-	router := httpapi.NewRouter(db, auth, map[int64]struct{}{401: {}}, nil, nil, nil, NewSeasonalRouter(db, nil, api), (&adminapi.Management{Pool: db, Mascot: api}).Router(http.NotFoundHandler()))
+	router := httpapi.NewRouter(db, auth, map[int64]struct{}{401: {}}, nil, nil, nil, NewSeasonalRouter(db, nil, api, ""), (&adminapi.Management{Pool: db, Mascot: api}).Router(http.NotFoundHandler()))
 	const admin = "/api/v1/admin/mascot"
 	const member = "/api/v1/member/mascot"
 	call := func(token, method, path string, body []byte) *httptest.ResponseRecorder {
@@ -174,7 +174,7 @@ func TestMascotImageRoutesAndRoleBoundaries(t *testing.T) {
 	if w := call("admin", "POST", resetPath, reset); w.Code != 404 && w.Code != 405 {
 		t.Fatalf("production router exposes test reset: %d", w.Code)
 	}
-	router = httpapi.NewRouter(db, auth, map[int64]struct{}{401: {}}, nil, nil, nil, NewSeasonalRouter(db, nil, api),
+	router = httpapi.NewRouter(db, auth, map[int64]struct{}{401: {}}, nil, nil, nil, NewSeasonalRouter(db, nil, api, ""),
 		(&adminapi.Management{Pool: db, Mascot: api, LocalSantaReset: true}).Router(http.NotFoundHandler()))
 	check(call("bob", "POST", resetPath, reset), 403)
 	check(call("admin", "POST", resetPath, []byte("{}")), 400)

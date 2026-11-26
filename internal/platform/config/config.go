@@ -5,23 +5,27 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 )
 
 type Config struct {
-	Environment            string
-	HTTPAddress            string
-	DatabaseURL            string
-	ShutdownTimeout        time.Duration
-	TelegramBotToken       string
-	TelegramInitDataMaxAge time.Duration
-	AdminTelegramIDs       map[int64]struct{}
-	BotServiceToken        string
-	AI                     AIConfig
-	ReminderOptions        []int
+	Environment             string
+	HTTPAddress             string
+	DatabaseURL             string
+	ShutdownTimeout         time.Duration
+	TelegramBotToken        string
+	TelegramInitDataMaxAge  time.Duration
+	AdminTelegramIDs        map[int64]struct{}
+	BotServiceToken         string
+	AI                      AIConfig
+	ReminderOptions         []int
+	FirstVisitAdminUsername string
 }
+
+var telegramUsername = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{0,31}$`)
 
 type Target struct {
 	Key             string
@@ -112,17 +116,25 @@ func Load() (Config, error) {
 	if len(options) == 0 {
 		return Config{}, fmt.Errorf("REMINDER_OPTIONS_MINUTES must include at least one reminder")
 	}
+	username := strings.TrimSpace(os.Getenv("FIRST_VISIT_ADMIN_USERNAME"))
+	if username != "" {
+		username = strings.TrimPrefix(username, "@")
+		if !telegramUsername.MatchString(username) {
+			return Config{}, fmt.Errorf("FIRST_VISIT_ADMIN_USERNAME must be a Telegram username")
+		}
+	}
 	return Config{
-		ReminderOptions:        options,
-		Environment:            valueOrDefault("APP_ENV", "development"),
-		HTTPAddress:            valueOrDefault("HTTP_ADDRESS", ":8080"),
-		DatabaseURL:            databaseURL,
-		ShutdownTimeout:        shutdownTimeout,
-		TelegramBotToken:       telegramBotToken,
-		TelegramInitDataMaxAge: initDataMaxAge,
-		AdminTelegramIDs:       adminTelegramIDs,
-		BotServiceToken:        botServiceToken,
-		AI:                     ai,
+		FirstVisitAdminUsername: username,
+		ReminderOptions:         options,
+		Environment:             valueOrDefault("APP_ENV", "development"),
+		HTTPAddress:             valueOrDefault("HTTP_ADDRESS", ":8080"),
+		DatabaseURL:             databaseURL,
+		ShutdownTimeout:         shutdownTimeout,
+		TelegramBotToken:        telegramBotToken,
+		TelegramInitDataMaxAge:  initDataMaxAge,
+		AdminTelegramIDs:        adminTelegramIDs,
+		BotServiceToken:         botServiceToken,
+		AI:                      ai,
 	}, nil
 }
 

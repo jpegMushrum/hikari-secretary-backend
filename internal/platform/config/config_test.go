@@ -104,6 +104,27 @@ func TestReminderListAcceptsEmptySeparators(t *testing.T) {
 	}
 }
 
+func TestFirstVisitAdminUsername(t *testing.T) {
+	setRequiredEnvironment(t)
+	for _, input := range []string{"club_admin", " @club_admin "} {
+		t.Setenv("FIRST_VISIT_ADMIN_USERNAME", input)
+		cfg, err := Load()
+		if err != nil || cfg.FirstVisitAdminUsername != "club_admin" {
+			t.Fatalf("valid username: %q, %v", cfg.FirstVisitAdminUsername, err)
+		}
+	}
+	for _, invalid := range []string{"https://t.me/club_admin", "@", "@@other", "name?start=1", "a name"} {
+		t.Setenv("FIRST_VISIT_ADMIN_USERNAME", invalid)
+		if _, err := Load(); err == nil {
+			t.Fatalf("accepted %q", invalid)
+		}
+	}
+	t.Setenv("FIRST_VISIT_ADMIN_USERNAME", "")
+	if cfg, err := Load(); err != nil || cfg.FirstVisitAdminUsername != "" {
+		t.Fatalf("empty optional username: %q, %v", cfg.FirstVisitAdminUsername, err)
+	}
+}
+
 func TestLoadConfiguresAIFromTargetFile(t *testing.T) {
 	setRequiredEnvironment(t)
 	file, err := os.CreateTemp(t.TempDir(), "targets-*.json")

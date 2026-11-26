@@ -115,8 +115,8 @@ func main() {
 		cfg.AdminTelegramIDs,
 		serviceauth.NewValidator(cfg.BotServiceToken),
 		peopleService,
-		botapi.NewRouter(pool, interactionService, publishingService, aiService),
-		memberapi.NewSeasonalRouter(pool, santaService, mascot, cfg.ReminderOptions...),
+		botapi.NewRouter(pool, interactionService, publishingService, botapi.RouterOptions{AI: aiService, FirstVisitAdminUsername: cfg.FirstVisitAdminUsername}),
+		memberapi.NewSeasonalRouter(pool, santaService, mascot, cfg.FirstVisitAdminUsername, cfg.ReminderOptions...),
 		(&adminapi.Management{Pool: pool, Mascot: mascot, Santa: santaService, LocalSantaReset: localSanta, Publications: publishingService, AIEnabled: cfg.AI.Enabled,
 			AIAutomationConfigured: cfg.AI.Enabled && cfg.AI.PublishTime != "", AILocation: location, AIPublishTime: cfg.AI.PublishTime}).Router(adminapi.NewRouter(eventsService)),
 	)

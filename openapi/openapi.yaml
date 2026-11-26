@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hikari Secretary Backend API
-  version: 0.5.0
+  version: 0.5.1
   description: |
     Внутренний API платформы Hikari Secretary. Административные предметные
     endpoints требуют проверенные Telegram Mini App credentials и роль
@@ -509,8 +509,17 @@ paths:
                 reminder_offset_minutes: {type: [integer, 'null'], minimum: 1, description: Минуты до начала из доступных значений или null для отключения}
                 profile: {oneOf: [{ $ref: '#/components/schemas/MemberRegistrationProfile' }, {type: 'null'}]}
       responses:
+        '200':
+          description: Первая успешная регистрация участника с is_itmo_student=false при заданном контакте. Ранее отменённые записи учитываются в истории. В одной транзакции с регистрацией backend ставит в очередь уведомление registration.first_visit для отправки ботом пользователю из проверенной initData.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [first_visit_admin_username]
+                properties:
+                  first_visit_admin_username: {type: string, description: Telegram username администратора без символа @}
         '204':
-          description: Изменение сохранено
+          description: Регистрация успешна, контакт для первого визита не требуется или не задан
         '400':
           description: Некорректное тело, время напоминания или профиль (`invalid_request`, `invalid_reminder`, `invalid_profile`)
           content:
@@ -2667,6 +2676,40 @@ paths:
                   $ref: '#/components/schemas/BotUpcomingEvent'
         '400': {description: 'Недопустимый Telegram ID, код invalid_request'}
         '401': {description: 'Требуется сервисный токен, код unauthorized'}
+        '500': {description: 'Ошибка хранения, код internal_error'}
+  /internal/bot/v1/events/{publication_id}/registrations:
+    post:
+      summary: Записать участника на мероприятие через бота
+      security:
+        - botServiceToken: []
+      parameters:
+        - {name: publication_id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [telegram_user_id]
+              properties:
+                telegram_user_id: {type: integer, format: int64, minimum: 1}
+                reminder_offset_minutes: {type: [integer, 'null'], minimum: 1}
+      responses:
+        '200':
+          description: Регистрация успешна
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [registered]
+                properties:
+                  registered: {type: boolean, const: true}
+                  first_visit_admin_username:
+                    type: string
+                    description: Telegram username администратора без символа @. Поле возвращается при заданном контакте только для первой успешной регистрации участника с is_itmo_student=false. Ранее отменённые записи учитываются в истории.
+        '400': {description: 'Недопустимый запрос или время напоминания, код invalid_request или invalid_reminder'}
+        '401': {description: 'Требуется сервисный токен, код unauthorized'}
+        '409': {description: 'Мероприятие недоступно или нужен профиль, код event_unavailable или profile_incomplete'}
         '500': {description: 'Ошибка хранения, код internal_error'}
   /internal/bot/v1/events/{publication_id}/registrations/{telegram_id}/reminder:
     patch:

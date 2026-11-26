@@ -36,19 +36,25 @@ const (
 )
 
 type Handler struct {
-	pool         *pgxpool.Pool
-	flows        *interactions.Service
-	publications *publishing.Service
-	ai           *learningapp.Service
-	previewSanta bool
+	pool                    *pgxpool.Pool
+	flows                   *interactions.Service
+	publications            *publishing.Service
+	ai                      *learningapp.Service
+	previewSanta            bool
+	firstVisitAdminUsername string
 }
 
-func NewRouter(pool *pgxpool.Pool, flows *interactions.Service, publications *publishing.Service, aiServices ...*learningapp.Service) http.Handler {
-	var ai *learningapp.Service
-	if len(aiServices) > 0 {
-		ai = aiServices[0]
+type RouterOptions struct {
+	AI                      *learningapp.Service
+	FirstVisitAdminUsername string
+}
+
+func NewRouter(pool *pgxpool.Pool, flows *interactions.Service, publications *publishing.Service, options ...RouterOptions) http.Handler {
+	var cfg RouterOptions
+	if len(options) > 0 {
+		cfg = options[0]
 	}
-	h := &Handler{pool: pool, flows: flows, publications: publications, ai: ai,
+	h := &Handler{pool: pool, flows: flows, publications: publications, ai: cfg.AI, firstVisitAdminUsername: cfg.FirstVisitAdminUsername,
 		previewSanta: os.Getenv("APP_ENV") == "development" && os.Getenv("TELEGRAM_BOT_TOKEN") == "local-miniapp-only-not-a-telegram-token"}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /people/profile", h.upsertProfile)
@@ -121,7 +127,7 @@ func (h *Handler) claimOutboxNotification(w http.ResponseWriter, r *http.Request
 	var raw []byte
 	var attempts int
 	err = tx.QueryRow(r.Context(), `SELECT id,topic,payload,attempts FROM outbox
-        WHERE (topic='event.cancelled' OR (topic='santa.notice' AND NOT $1::boolean))
+        WHERE (topic IN ('event.cancelled','registration.first_visit') OR (topic='santa.notice' AND NOT $1::boolean))
         AND status IN ('pending','failed') AND available_at<=NOW() AND (`+santapg.NoticeDispatchableSQL+`)
         ORDER BY available_at,id FOR UPDATE SKIP LOCKED LIMIT 1`, h.previewSanta).Scan(&id, &topic, &raw, &attempts)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -1010,7 +1016,9 @@ func (h *Handler) register(writer http.ResponseWriter, request *http.Request) {
 	}
 	defer tx.Rollback(ctx)
 	var eventID, personID int64
-	err = tx.QueryRow(ctx, "SELECT event_id FROM event_publication_references WHERE external_publication_id=$1", strconv.FormatInt(publicationID, 10)).Scan(&eventID)
+	// Match the member route's lock order: event, then participant, then registration.
+	err = tx.QueryRow(ctx, `SELECT e.id FROM events e JOIN event_publication_references ref ON ref.event_id=e.id
+		WHERE ref.external_publication_id=$1 FOR SHARE OF e`, strconv.FormatInt(publicationID, 10)).Scan(&eventID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(writer, 409, "event_unavailable")
 		return
@@ -1028,7 +1036,7 @@ func (h *Handler) register(writer http.ResponseWriter, request *http.Request) {
 		writeError(writer, 500, "internal_error")
 		return
 	}
-	err = eventspostgres.RegisterTx(ctx, tx, eventID, personID, body.ReminderOffsetMinutes)
+	firstOutsideITMO, err := eventspostgres.RegisterTx(ctx, tx, eventID, personID, body.ReminderOffsetMinutes)
 	if errors.Is(err, eventspostgres.ErrRegistrationClosed) {
 		writeError(writer, 409, "event_unavailable")
 		return
@@ -1041,7 +1049,11 @@ func (h *Handler) register(writer http.ResponseWriter, request *http.Request) {
 		writeError(writer, 500, "internal_error")
 		return
 	}
-	writeJSON(writer, http.StatusOK, map[string]any{"registered": true})
+	result := map[string]any{"registered": true}
+	if firstOutsideITMO && h.firstVisitAdminUsername != "" {
+		result["first_visit_admin_username"] = h.firstVisitAdminUsername
+	}
+	writeJSON(writer, http.StatusOK, result)
 }
 
 func (h *Handler) registrationStatus(writer http.ResponseWriter, request *http.Request) {

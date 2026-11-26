@@ -21,8 +21,9 @@ import (
 )
 
 type Handler struct {
-	pool      *pgxpool.Pool
-	reminders []int
+	pool                    *pgxpool.Pool
+	reminders               []int
+	firstVisitAdminUsername string
 }
 type personKey struct{}
 
@@ -33,11 +34,11 @@ func NewRouter(pool *pgxpool.Pool, reminderOptions ...int) http.Handler {
 }
 
 func NewRouterWithSanta(pool *pgxpool.Pool, seasonal santa.Service, reminderOptions ...int) http.Handler {
-	return NewSeasonalRouter(pool, seasonal, nil, reminderOptions...)
+	return NewSeasonalRouter(pool, seasonal, nil, "", reminderOptions...)
 }
 
-func NewSeasonalRouter(pool *pgxpool.Pool, seasonal santa.Service, mascot *mascotapi.Handler, reminderOptions ...int) http.Handler {
-	h := &Handler{pool: pool, reminders: reminderOptions}
+func NewSeasonalRouter(pool *pgxpool.Pool, seasonal santa.Service, mascot *mascotapi.Handler, firstVisitAdminUsername string, reminderOptions ...int) http.Handler {
+	h := &Handler{pool: pool, reminders: reminderOptions, firstVisitAdminUsername: firstVisitAdminUsername}
 	if len(h.reminders) == 0 {
 		h.reminders = []int{30, 60, 120, 360, 1440}
 	}

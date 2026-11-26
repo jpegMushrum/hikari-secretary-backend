@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/jackc/pgx/v5"
 	eventpg "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/events/adapters/postgres"
+	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/requestcontext"
 	"net/http"
 	"slices"
 	"strings"
@@ -120,12 +121,33 @@ func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	err = eventpg.RegisterTx(r.Context(), tx, id, pid, offset)
+	firstOutsideITMO, err := eventpg.RegisterTx(r.Context(), tx, id, pid, offset)
 	if err != nil {
 		dbError(w, err)
 		return
 	}
-	commitMutation(w, r, tx)
+	notify := firstOutsideITMO && h.firstVisitAdminUsername != ""
+	if notify {
+		identity, _ := requestcontext.Member(r.Context())
+		_, err := tx.Exec(r.Context(), `INSERT INTO outbox(topic,aggregate_type,aggregate_id,payload,idempotency_key)
+			VALUES ('registration.first_visit','person',$1,
+				jsonb_build_object('telegram_user_id',$2::bigint,'first_visit_admin_username',$3::text),
+				'registration:first-visit:' || $1::bigint::text)
+			ON CONFLICT (idempotency_key) DO NOTHING`, pid, identity.Telegram.TelegramID, h.firstVisitAdminUsername)
+		if err != nil {
+			dbError(w, err)
+			return
+		}
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		dbError(w, err)
+		return
+	}
+	if notify {
+		writeJSON(w, http.StatusOK, map[string]string{"first_visit_admin_username": h.firstVisitAdminUsername})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 func (h *Handler) updateReminder(w http.ResponseWriter, r *http.Request) {
 	var body struct {

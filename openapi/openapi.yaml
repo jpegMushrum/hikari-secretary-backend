@@ -11,6 +11,165 @@ info:
 servers:
   - url: /
 paths:
+  /api/v1/admin/mascot:
+    get:
+      summary: Состояние конкурса
+      security: [{ telegramInitData: [] }]
+      responses:
+        '200':
+          description: Запрос выполнен
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/MascotView'}}
+        default: {description: 'Ошибка авторизации, доступа, данных или состояния конкурса'}
+    post:
+      summary: Выполнить команду администратора
+      security: [{ telegramInitData: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/MascotAdminCommand'}}
+      responses:
+        '204': {description: Команда выполнена}
+        default: {description: 'Ошибка авторизации, доступа, данных или состояния конкурса'}
+  /api/v1/admin/mascot/visibility:
+    get:
+      summary: Видимость пункта выборов
+      security: [{ telegramInitData: [] }]
+      responses:
+        '200':
+          description: Запрос выполнен
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/MascotVisibility'}}
+        default: {description: 'Ошибка авторизации, доступа, данных или состояния конкурса'}
+  /api/v1/admin/mascot/results/entries/{id}:
+    get:
+      summary: Анонимная карточка концепта из итогов завершённого или отменённого тура текущего сезона
+      security: [{ telegramInitData: [] }]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: integer, minimum: 1}}
+      responses:
+        '200':
+          description: Концепт для просмотра итогов и показа на проекторе
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/MascotEntry'}}
+        '404': {description: Концепт недоступен в итогах текущего сезона}
+  /api/v1/admin/mascot/images/{key}:
+    get:
+      summary: Изображение, доступное текущему профилю
+      security: [{ telegramInitData: [] }]
+      parameters:
+        - {in: path, name: key, required: true, schema: {type: string, pattern: '^[a-f0-9]{32}$'}}
+      responses:
+        '200':
+          description: Запрос выполнен
+          content:
+            image/jpeg: {schema: {type: string, format: binary}}
+            image/png: {schema: {type: string, format: binary}}
+        default: {description: 'Ошибка авторизации, доступа, данных или состояния конкурса'}
+  /api/v1/admin/mascot/test-deadline:
+    post:
+      summary: Завершить приём на синтетическом локальном стенде
+      security: [{ telegramInitData: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/MascotLocalSeason'}}
+      responses:
+        '204': {description: Команда выполнена}
+        default: {description: 'Ошибка авторизации, доступа, данных или состояния конкурса'}
+  /api/v1/admin/mascot/test-reset:
+    post:
+      summary: Перезапустить выборы на локальном тестовом стенде
+      security: [{ telegramInitData: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/MascotLocalSeason'}}
+      responses:
+        '204': {description: Предыдущий сезон закрыт и создан новый на этапе подготовки}
+        '400': {description: Отсутствует или неверно указан идентификатор сезона}
+        '403': {description: Требуется роль администратора}
+        '409': {description: Запрошенный сезон уже закрыт или отсутствует}
+  /api/v1/member/mascot:
+    get:
+      summary: Состояние конкурса
+      security: [{ telegramInitData: [] }]
+      responses:
+        '200':
+          description: Запрос выполнен
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/MascotView'}}
+        default: {description: 'Ошибка авторизации, доступа, данных или состояния конкурса'}
+    post:
+      summary: Выполнить команду участника
+      security: [{ telegramInitData: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/MascotMemberCommand'}}
+      responses:
+        '204': {description: Команда выполнена}
+        default: {description: 'Ошибка авторизации, доступа, данных или состояния конкурса'}
+  /api/v1/member/mascot/visibility:
+    get:
+      summary: Видимость пункта выборов
+      security: [{ telegramInitData: [] }]
+      responses:
+        '200':
+          description: Запрос выполнен
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/MascotVisibility'}}
+        default: {description: 'Ошибка авторизации, доступа, данных или состояния конкурса'}
+  /api/v1/member/mascot/results/entries/{id}:
+    get:
+      summary: Анонимная карточка из опубликованных результатов текущего сезона
+      security: [{ telegramInitData: [] }]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: integer, minimum: 1}}
+      responses:
+        '200':
+          description: Концепт с описанием и иллюстрациями
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/MascotEntry'}}
+        '404': {description: Итоги не опубликованы или концепт отсутствует в них}
+  /api/v1/member/mascot/images/{key}:
+    delete:
+      summary: Освободить собственное изображение, ещё не прикреплённое к заявке
+      security: [{ telegramInitData: [] }]
+      parameters:
+        - {in: path, name: key, required: true, schema: {type: string, pattern: '^[a-f0-9]{32}$'}}
+      responses:
+        '204': {description: Файл поставлен в очередь удаления}
+        '404': {description: Файл недоступен для удаления}
+    get:
+      summary: Изображение, доступное текущему профилю
+      security: [{ telegramInitData: [] }]
+      parameters:
+        - {in: path, name: key, required: true, schema: {type: string, pattern: '^[a-f0-9]{32}$'}}
+      responses:
+        '200':
+          description: Запрос выполнен
+          content:
+            image/jpeg: {schema: {type: string, format: binary}}
+            image/png: {schema: {type: string, format: binary}}
+        default: {description: 'Ошибка авторизации, доступа, данных или состояния конкурса'}
+  /api/v1/member/mascot/images:
+    post:
+      summary: Загрузить изображение для своей заявки
+      security: [{ telegramInitData: [] }]
+      parameters:
+        - {in: query, name: season_id, required: true, schema: {type: integer, minimum: 1}}
+      requestBody:
+        required: true
+        content:
+          image/jpeg: {schema: {type: string, format: binary}}
+          image/png: {schema: {type: string, format: binary}}
+      responses:
+        '200':
+          description: Запрос выполнен
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/MascotUpload'}}
+        default: {description: 'Ошибка авторизации, доступа, данных или состояния конкурса'}
   /api/v1/member/santa/visibility:
     get:
       summary: Видимость сезонного пункта в меню участника
@@ -2709,6 +2868,109 @@ components:
         format: int64
         minimum: 1
   schemas:
+    MascotVisibility:
+      type: object
+      required: [visible]
+      properties:
+        visible: {type: boolean}
+        submission_until: {type: string, format: date-time, description: Deadline while concept submissions are open.}
+    MascotUpload:
+      type: object
+      properties:
+        key: {type: string}
+    MascotImage:
+      type: object
+      required: [key, ai]
+      properties:
+        key: {type: string}
+        ai: {type: boolean}
+    MascotEntry:
+      type: object
+      properties:
+        id: {type: integer}
+        name: {type: string}
+        description: {type: string}
+        approved: {type: boolean}
+        author: {type: string, description: Только в административной выдаче}
+        author_telegram_id: {type: integer, description: Telegram ID автора в административном списке}
+        author_username: {type: string, description: Имя пользователя Telegram автора при наличии в административном списке}
+        images: {type: array, items: {$ref: '#/components/schemas/MascotImage'}}
+    MascotRound:
+      type: object
+      properties:
+        number: {type: integer}
+        cancelled: {type: boolean}
+        rows:
+          type: array
+          items:
+            type: object
+            properties:
+              entry_id: {type: integer}
+              name: {type: string}
+              place: {type: integer}
+              likes: {type: integer}
+              skips: {type: integer}
+              percent: {type: [number, 'null'], description: Процент лайков среди принятых ответов}
+    MascotView:
+      type: object
+      properties:
+        pending_images: {type: array, items: {type: string}, description: Свои загруженные изображения без заявки в период приёма}
+        season:
+          type: object
+          properties:
+            id: {type: integer}
+            phase: {enum: [preparation, submissions, moderation, readiness, voting, results, published]}
+            deadline: {type: [string, 'null']}
+            round: {type: integer}
+            winner_id: {type: [integer, 'null']}
+        eligible: {type: boolean}
+        ready: {type: boolean}
+        can_ready: {type: boolean}
+        remaining: {type: integer}
+        card: {anyOf: [{$ref: '#/components/schemas/MascotEntry'}, {type: 'null'}]}
+        entries: {type: array, items: {$ref: '#/components/schemas/MascotEntry'}}
+        rounds: {type: array, items: {$ref: '#/components/schemas/MascotRound'}}
+        finalists: {type: array, items: {type: integer}}
+        voters:
+          type: array
+          items:
+            type: object
+            properties:
+              person_id: {type: integer}
+              name: {type: string}
+              excluded: {type: boolean}
+              telegram_id: {type: integer}
+              username: {type: string}
+    MascotLocalSeason:
+      type: object
+      required: [season_id]
+      properties:
+        season_id: {type: integer, minimum: 1}
+    MascotAdminCommand:
+      type: object
+      required: [action, season_id, round]
+      properties:
+        action: {enum: [open, moderate, collect, exclude, start, finish, runoff, choose, publish]}
+        season_id: {type: integer}
+        round: {type: integer}
+        deadline: {type: string, format: date, description: Полночь даты в Москве}
+        entry_id: {type: integer}
+        entry_ids: {type: array, items: {type: integer}}
+        approved: {type: boolean}
+        person_id: {type: integer}
+    MascotMemberCommand:
+      type: object
+      required: [action, season_id, round]
+      properties:
+        action: {enum: [submit, withdraw, ready, vote]}
+        request_id: {type: string, description: Идентификатор попытки создания заявки для защиты от дублей}
+        season_id: {type: integer}
+        round: {type: integer}
+        entry_id: {type: integer}
+        name: {type: string}
+        description: {type: string}
+        images: {type: array, minItems: 1, maxItems: 3, items: {$ref: '#/components/schemas/MascotImage'}}
+        like: {type: boolean}
     SantaVisibility:
       type: object
       required: [visible]

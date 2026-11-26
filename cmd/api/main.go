@@ -15,6 +15,7 @@ import (
 
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/adapters/adminapi"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/adapters/botapi"
+	"github.com/jpegMushrum/hikari-secretary-backend/internal/adapters/mascotapi"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/adapters/memberapi"
 	eventspostgres "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/events/adapters/postgres"
 	eventsapp "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/events/application"
@@ -23,6 +24,7 @@ import (
 	deepseek "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent/adapters/deepseek"
 	learningpostgres "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent/adapters/postgres"
 	learningapp "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/learningcontent/application"
+	mascotpg "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/mascot/adapters/postgres"
 	peoplepostgres "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/people/adapters/postgres"
 	peopleapp "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/people/application"
 	publishingpostgres "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/adapters/postgres"
@@ -32,6 +34,7 @@ import (
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/config"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/database"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/httpapi"
+	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/mascotmedia"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/serviceauth"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/platform/telegramauth"
 )
@@ -39,8 +42,8 @@ import (
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	if len(os.Args) > 1 {
-		if err := runSantaCommand(os.Args[1:], logger); err != nil {
-			logger.Error("Santa season command failed", "error", err)
+		if err := runSeasonCommand(os.Args[1:], logger); err != nil {
+			logger.Error("season command failed", "error", err)
 			os.Exit(1)
 		}
 		return
@@ -94,6 +97,17 @@ func main() {
 	}
 
 	go runSantaReminderScheduler(ctx, santaService, logger)
+	mascotRepo := mascotpg.NewRepository(pool)
+	mascot := &mascotapi.Handler{Repo: mascotRepo}
+	store, err := mascotmedia.FromEnv()
+	if err != nil {
+		logger.Error("invalid mascot storage configuration", "error", err)
+		os.Exit(1)
+	}
+	if store != nil {
+		mascot.Objects = store
+		go cleanMascotUploads(ctx, mascotRepo, store, logger)
+	}
 	localSanta := cfg.Environment == "development" && cfg.TelegramBotToken == "local-miniapp-only-not-a-telegram-token"
 	var router http.Handler = httpapi.NewRouter(
 		pool,
@@ -102,8 +116,8 @@ func main() {
 		serviceauth.NewValidator(cfg.BotServiceToken),
 		peopleService,
 		botapi.NewRouter(pool, interactionService, publishingService, aiService),
-		memberapi.NewRouterWithSanta(pool, santaService, cfg.ReminderOptions...),
-		(&adminapi.Management{Pool: pool, Santa: santaService, LocalSantaReset: localSanta, Publications: publishingService, AIEnabled: cfg.AI.Enabled,
+		memberapi.NewSeasonalRouter(pool, santaService, mascot, cfg.ReminderOptions...),
+		(&adminapi.Management{Pool: pool, Mascot: mascot, Santa: santaService, LocalSantaReset: localSanta, Publications: publishingService, AIEnabled: cfg.AI.Enabled,
 			AIAutomationConfigured: cfg.AI.Enabled && cfg.AI.PublishTime != "", AILocation: location, AIPublishTime: cfg.AI.PublishTime}).Router(adminapi.NewRouter(eventsService)),
 	)
 	if localSanta {

@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jpegMushrum/hikari-secretary-backend/internal/adapters/mascotapi"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/adapters/santaapi"
 	publishing "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/application"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/modules/publishing/domain"
@@ -24,6 +25,7 @@ import (
 
 // Management is mounted behind the same administrator middleware as event reads.
 type Management struct {
+	Mascot                 *mascotapi.Handler
 	Santa                  santa.Service
 	LocalSantaReset        bool
 	Pool                   *pgxpool.Pool
@@ -36,6 +38,9 @@ type Management struct {
 
 func (h *Management) Router(events http.Handler) http.Handler {
 	mux := http.NewServeMux()
+	if h.Mascot != nil {
+		h.Mascot.MountAdmin(mux, h.LocalSantaReset)
+	}
 	if h.Santa != nil {
 		santaapi.MountAdmin(mux, h.Santa)
 		if h.LocalSantaReset {

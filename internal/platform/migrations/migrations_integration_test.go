@@ -59,14 +59,16 @@ func TestRunAppliesAllMigrationsToAnEmptySchema(t *testing.T) {
 	if err := conn.QueryRow(ctx, "SELECT COUNT(*) FROM schema_migrations").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 17 {
-		t.Fatalf("applied migrations = %d, want 17", count)
+	if count != 19 {
+		t.Fatalf("applied migrations = %d, want 19", count)
 	}
 
 	for _, table := range []string{
 		"publications", "publication_media", "publication_deliveries",
 		"ai_topic_settings", "ai_topic_jobs", "ai_topic_versions",
 		"santa_seasons", "santa_participants", "santa_pairs", "santa_wish_drafts",
+		"mascot_seasons", "mascot_entries", "mascot_images", "mascot_rounds",
+		"mascot_candidates", "mascot_voters", "mascot_answers",
 	} {
 		var exists bool
 		if err := conn.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, table).Scan(&exists); err != nil {

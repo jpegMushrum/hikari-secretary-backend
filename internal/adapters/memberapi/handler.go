@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jpegMushrum/hikari-secretary-backend/internal/adapters/mascotapi"
 	"github.com/jpegMushrum/hikari-secretary-backend/internal/adapters/santaapi"
 	peoplepg "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/people/adapters/postgres"
 	peopleapp "github.com/jpegMushrum/hikari-secretary-backend/internal/modules/people/application"
@@ -32,11 +33,18 @@ func NewRouter(pool *pgxpool.Pool, reminderOptions ...int) http.Handler {
 }
 
 func NewRouterWithSanta(pool *pgxpool.Pool, seasonal santa.Service, reminderOptions ...int) http.Handler {
+	return NewSeasonalRouter(pool, seasonal, nil, reminderOptions...)
+}
+
+func NewSeasonalRouter(pool *pgxpool.Pool, seasonal santa.Service, mascot *mascotapi.Handler, reminderOptions ...int) http.Handler {
 	h := &Handler{pool: pool, reminders: reminderOptions}
 	if len(h.reminders) == 0 {
 		h.reminders = []int{30, 60, 120, 360, 1440}
 	}
 	mux := http.NewServeMux()
+	if mascot != nil {
+		mascot.MountMember(mux, personID)
+	}
 	if seasonal != nil {
 		santaapi.MountMember(mux, seasonal, personID)
 	}
